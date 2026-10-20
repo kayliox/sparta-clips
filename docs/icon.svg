@@ -1,0 +1,17 @@
+<!-- Sparta Clips app icon — the source of truth. app.ico + docs/icon.png are rendered from this by tools/make_icon.py.
+     Dark rounded square with a faint rim (stays visible on dark taskbars) + a hand-drawn geometric omega in the app's
+     pink→purple gradient (even stroke, circular bowl, pinched ankles, flat feet). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1d1d25"/>
+      <stop offset="1" stop-color="#0d0d11"/>
+    </linearGradient>
+    <linearGradient id="g" gradientUnits="userSpaceOnUse" x1="60" y1="60" x2="196" y2="196">
+      <stop offset="0" stop-color="#ff3b4e"/>
+      <stop offset="1" stop-color="#9b5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="252" height="252" rx="58" fill="url(#bg)" stroke="#ffffff" stroke-opacity="0.10" stroke-width="4"/>
+  <path d="M 60 190 H 104 L 99 172 A 62 62 0 1 1 157 172 L 152 190 H 196" fill="none" stroke="url(#g)" stroke-width="22" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>
