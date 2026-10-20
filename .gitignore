@@ -1,0 +1,16 @@
+# Build output
+bin/
+obj/
+.vs/
+
+# Deploy staging (created by deploy.ps1)
+SpartaClips-final/
+
+# Local editor / tooling
+.vscode/
+**/.claude/settings.local.json
+**/.claude/*.lock
+__pycache__/
+
+# Installer build output (installer/build.ps1, CI)
+artifacts/

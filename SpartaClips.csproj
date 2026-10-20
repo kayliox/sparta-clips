@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- 22621 projection matches the source project; runtime min stays 17763. -->
+    <TargetFramework>net8.0-windows10.0.22621.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- x64: ScreenRecorderLib (game-clip capture) is an x64 mixed-mode native library and its MSBuild targets
+         reject AnyCPU. Output lands in bin\x64\Release\<tfm>\ (deploy.ps1 matches). -->
+    <Platform>x64</Platform>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <!-- Flat namespace regardless of folder, so files can move between folders without a .csproj change. -->
+    <AssemblyName>SpartaClips</AssemblyName>
+    <RootNamespace>SpartaClips</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <Authors>Kayliox</Authors>
+    <Product>Sparta Clips</Product>
+    <Copyright>© 2026 Kayliox</Copyright>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <!-- CDP_HOOK = the UI-automation DevTools hook (tools/uidrive.py, smoke/stress/mediatest). Debug builds, or
+       ./deploy.ps1 -TestHooks (passes EnableTestHooks=true). Never in a normal Release build. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug' Or '$(EnableTestHooks)' == 'true'">
+    <DefineConstants>$(DefineConstants);CDP_HOOK</DefineConstants>
+  </PropertyGroup>
+
+  <!-- Package subset carried from Sparta Dock: only what the capture engine + WebView2 shell need.
+       (Dropped vs the launcher: Concentus, SpeexDSPSharp, Nefarius.ViGEm.Client, System.Management.) -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2792.45" />
+    <PackageReference Include="ScreenRecorderLib" Version="6.6.0" />   <!-- game-clip capture (WGC + Media Foundation, x64) -->
+    <PackageReference Include="NAudio" Version="2.2.1" />               <!-- mic/chat WASAPI sidecar + the save chime -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <!-- tools/enginetest is its own console project (engine regression tests) — never compile it into the app. -->
+  <ItemGroup>
+    <Compile Remove="tools\**" />
+    <None Remove="tools\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="web\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>web\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Content>
+  </ItemGroup>
+</Project>

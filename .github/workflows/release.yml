@@ -1,0 +1,56 @@
+# release.yml — every push to main builds a fresh one-click installer and publishes it as the newest GitHub Release.
+# The README's download button points at .../releases/latest/download/SpartaClipsSetup.exe, which always resolves to
+# the newest release — so the button is never stale. Versions are 0.1.<build number>; bump MAJOR_MINOR to move on.
+name: Build installer
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # create the release + upload the installer
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  MAJOR_MINOR: "0.1"
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Version
+        id: v
+        shell: pwsh
+        run: echo "version=$env:MAJOR_MINOR.${{ github.run_number }}" >> $env:GITHUB_OUTPUT
+
+      - name: Ensure Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
+      - name: Build installer (self-contained publish + Inno Setup)
+        shell: pwsh
+        run: ./installer/build.ps1 -Version ${{ steps.v.outputs.version }}
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.v.outputs.version }}
+          name: Sparta Clips ${{ steps.v.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          files: artifacts/SpartaClipsSetup.exe
+          body: |
+            **Download `SpartaClipsSetup.exe` below, double-click it, done.** No .NET or admin rights needed.
+
+            Changes in this build: ${{ github.event.head_commit.message || 'manual build' }}

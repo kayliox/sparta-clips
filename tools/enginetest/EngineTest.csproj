@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Engine regression tests: loads the BUILT SpartaClips.dll (bin\x64\Release) by reflection and exercises the
+       capture/audio/share internals directly — the paths the CDP UI tests (smoke/mediatest/stress) can't reach.
+       Run:  dotnet build ..\..\SpartaClips.csproj -c Release   then   dotnet run -c Release   (from this folder) -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows10.0.22621.0</TargetFramework>
+    <Platform>x64</Platform>
+    <PlatformTarget>x64</PlatformTarget>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AppBin>$(MSBuildThisFileDirectory)..\..\bin\x64\Release\net8.0-windows10.0.22621.0\</AppBin>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="NAudio.Core"><HintPath>$(AppBin)NAudio.Core.dll</HintPath></Reference>
+    <Reference Include="NAudio.Wasapi"><HintPath>$(AppBin)NAudio.Wasapi.dll</HintPath></Reference>
+    <Reference Include="Newtonsoft.Json"><HintPath>$(AppBin)Newtonsoft.Json.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>

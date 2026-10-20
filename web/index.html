@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<!-- Sparta Clips - standalone game clips recorder/editor shell (WebView2 host). Single classic app.js, zero-build. -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sparta Clips</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body data-theme="spartan">
+  <!-- ===== Opening splash — its ONLY load-bearing job is the first-paint handshake postMessage ===== -->
+  <div class="splash" id="splash">
+    <div class="splash-core">
+      <div class="splash-frame" aria-hidden="true"></div>
+      <div class="splash-logo"><span class="splash-s">S</span><span class="splash-omega">Ω</span></div>
+      <div class="splash-word">SPARTA&nbsp;CLIPS</div>
+      <div class="splash-rule"></div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var s = document.getElementById("splash");
+      // First-paint handshake: tell the host the renderer has actually COMPOSITED a frame (double rAF = after the
+      // first paint), so C# reveals the window only once there are pixels. Fires on every load; C# reveals once.
+      try {
+        requestAnimationFrame(function () { requestAnimationFrame(function () {
+          try { if (window.chrome && chrome.webview && chrome.webview.postMessage) chrome.webview.postMessage("splash-painted"); } catch (e) {}
+        }); });
+      } catch (e) {}
+      // Restore the saved neon palette instantly (before app.js boots) so the splash is theme-correct.
+      try {
+        var TH = { noir:["#18f0ff","24,240,255","#ff2bd6"], spartan:["#ff2740","255,39,64","#ffb030"],
+          toxic:["#adff2f","173,255,47","#16e0ff"], synth:["#b06bff","176,107,255","#1ee0ff"],
+          cockpit:["#74ff4d","116,255,77","#ffb020"], eva:["#ff6a1a","255,106,26","#9bdb1e"] };
+        var t = TH[localStorage.getItem("sc_theme")] || TH.spartan;
+        s.style.setProperty("--neon", t[0]); s.style.setProperty("--neon-rgb", t[1]); s.style.setProperty("--neon2", t[2]);
+      } catch (e) {}
+      if (!s) return;
+      var done = false;
+      function end() { if (done) return; done = true; window.removeEventListener("keydown", onKey, true);
+        s.style.transition = "opacity .4s ease"; s.style.opacity = "0"; s.style.pointerEvents = "none";
+        setTimeout(function () { s.style.display = "none"; s.classList.add("hidden"); }, 420); }
+      s.addEventListener("click", end);
+      // Removed in end() — before: this capture listener lived forever and its preventDefault killed the Space key
+      // in every text field (search, rename, share filename) for the whole session.
+      function onKey(e) { if (e.code === "Space") e.preventDefault(); end(); }
+      window.addEventListener("keydown", onKey, true);
+      setTimeout(end, 1600);   // short splash — the app is ready fast
+    })();
+  </script>
+
+  <!-- ===== Custom frameless title bar: brand + top-tab nav + window controls. Draggable via CSS app-region. ===== -->
+  <div class="titlebar" id="titlebar">
+    <div class="tb-brand"><span class="tb-omega" id="tbOmega" title="Sparta Clips">Ω</span></div>
+    <nav class="tb-nav">
+      <button class="nav-tab active" data-view="gallery" aria-selected="true">Clips</button>
+      <button class="nav-tab" data-view="settings" aria-selected="false">Settings</button>
+    </nav>
+    <div class="tb-spacer"></div>
+    <!-- Always-visible capture HUD: Record / REC m:ss / Save replay (armed). Bound once at boot; state via updateClipRecUI. -->
+    <div class="tb-hud" id="tbHud">
+      <button class="hud-rec" id="galRecBtn" title="Start / stop recording"><span class="gal-rec-dot"></span><span class="gal-rec-label">Record</span><span class="gal-rec-elapsed" id="galRecElapsed"></span></button>
+      <button class="hud-rec armed" id="galSaveReplay" title="Save the last few seconds" hidden><span class="gal-rec-dot"></span><span>Save replay</span></button>
+      <!-- Capture-source picker: session-only override (Auto / Desktop / pinned window) — never touches saved settings. -->
+      <button class="hud-rec hud-src" id="tbSource" title="Capture source">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12.5" rx="2"/><line x1="8.5" y1="20" x2="15.5" y2="20"/></svg>
+        <span id="tbSourceLabel">Auto</span>
+      </button>
+    </div>
+    <div class="tb-spacer"></div>
+    <div class="tb-winctrls">
+      <button class="win-btn" id="winMin" title="Minimize" aria-label="Minimize"><svg viewBox="0 0 24 24" stroke-linecap="round"><line x1="6" y1="12" x2="18" y2="12"/></svg></button>
+      <button class="win-btn win-max" id="winMax" title="Maximize" aria-label="Maximize">
+        <svg class="ico-max" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="4.5"/></svg>
+        <svg class="ico-restore" viewBox="0 0 24 24"><rect x="7.5" y="7.5" width="10" height="10" rx="3.5"/><path d="M9.5 7.5V6a1.5 1.5 0 0 1 1.5-1.5h7A1.5 1.5 0 0 1 19.5 6v7a1.5 1.5 0 0 1-1.5 1.5H16"/></svg>
+      </button>
+      <button class="win-btn win-close" id="winClose" title="Close" aria-label="Close"><svg viewBox="0 0 24 24" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg></button>
+    </div>
+  </div>
+
+  <!-- Capture-source popover (anchored under #tbSource by JS). "Window capture" expands into a live-preview grid. -->
+  <div class="src-pop" id="srcPop" hidden>
+    <button class="src-mode active" data-src="auto"><b>Automatic</b><span>Follows your capture settings — game window or display.</span></button>
+    <button class="src-mode" data-src="display"><b>Desktop</b><span>Always capture the whole display.</span></button>
+    <button class="src-mode" data-src="window"><b>Window capture</b><span>Pin one app's window — ideal for showcasing an app.</span></button>
+    <div class="src-winwrap" id="srcWinWrap" hidden>
+      <div class="src-winhead"><span>Pick a window</span><button id="srcWinRefresh" title="Refresh list">↻</button></div>
+      <div class="src-wingrid" id="srcWinGrid"></div>
+    </div>
+  </div>
+
+  <!-- Frameless resize grips: invisible edge/corner strips that start a native resize (no-drag). Hidden when maximized. -->
+  <div id="resizeGrips" aria-hidden="true">
+    <div class="rz rz-t" data-dir="t"></div>
+    <div class="rz rz-b" data-dir="b"></div>
+    <div class="rz rz-l" data-dir="l"></div>
+    <div class="rz rz-r" data-dir="r"></div>
+    <div class="rz rz-tl" data-dir="tl"></div>
+    <div class="rz rz-tr" data-dir="tr"></div>
+    <div class="rz rz-bl" data-dir="bl"></div>
+    <div class="rz rz-br" data-dir="br"></div>
+  </div>
+
+  <div class="app">
+    <main class="stage" id="stage">
+      <!-- Gallery view (home) — the grid is built entirely by renderGallery() into #galleryHost. -->
+      <section class="view" id="view-gallery"><div id="galleryHost"></div></section>
+
+      <!-- Settings view — the lifted Game Capture pane (only capture settings) + app-shell controls. -->
+      <section class="view" id="view-settings" hidden>
+        <div class="settings-scroll">
+          <!-- Floating frosted section-nav pill — paged settings (buildSettingsNav wires chips → setSettingsPage). -->
+          <div class="set-subnav" id="setSubnav"></div>
+          <div class="settings-pane active" data-setpane="capture">
+            <div class="panel section">
+              <div class="section-head"><div><h3>Recording</h3><p>Quality and target for clips captured by Sparta Clips. Hardware H.264 (Windows Graphics Capture) keeps the overhead low.</p></div></div>
+              <div class="setting-row">
+                <div class="label"><strong>Quality preset</strong><span>Low is light on disk and CPU; High is sharpest. Pick <b>Custom</b> to set framerate, bitrate and resolution yourself.</span></div>
+                <select id="capQuality" class="sgdb-field" aria-label="Quality preset"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="custom">Custom</option></select>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Framerate</strong><span>Frames per second in the recording. <b>120</b> needs a 120 Hz+ display, a game running that fast and a capable GPU encoder (pair it with a higher bitrate).</span></div>
+                <select id="capFps" class="sgdb-field" aria-label="Framerate"><option value="30">30 fps</option><option value="60">60 fps</option><option value="120">120 fps</option></select>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Encoder</strong><span><b>H.264</b> is the default — fast and plays in the editor and everywhere. <b>AV1</b> is the smallest and still previews in-app (a one-time FFmpeg download): <b>Hardware</b> is fast but needs a recent GPU (RTX 40 / Arc / RX 7000); <b>Software</b> runs on any PC's CPU — slower, great for short clips &amp; replays. <b>H.265 / HEVC</b> is small and now previews in-app — natively if Windows has the HEVC codec, otherwise via a quick H.264 conversion.</span></div>
+                <select id="capEncoder" class="sgdb-field" aria-label="Video encoder"><option value="h264">H.264 (compatible — default)</option><option value="av1_hw">AV1 — hardware (smallest, fast)</option><option value="av1_sw">AV1 — software (smallest, any GPU)</option><option value="h265">H.265 / HEVC (smallest; in-app preview)</option></select>
+              </div>
+              <div class="setting-row hevc-rescan-row" id="hevcRescanRow" hidden>
+                <div class="label"><strong>In-app HEVC preview</strong><span class="hevc-scan-state" id="hevcScanState"></span></div>
+                <button class="tiny-btn" id="hevcRescanBtn" title="Re-check whether Windows can decode HEVC in the app — use this after installing the HEVC Video Extensions from the Microsoft Store.">↻ Re-scan HEVC</button>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Bitrate</strong><span>Higher looks better but uses more disk. 20 Mbps is a good 1080p balance.</span></div>
+                <select id="capBitrate" class="sgdb-field" aria-label="Bitrate"><option value="10">10 Mbps</option><option value="20">20 Mbps</option><option value="30">30 Mbps</option><option value="50">50 Mbps</option></select>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Resolution</strong><span><b>Source</b> records at the captured size; otherwise it's scaled to the chosen height.</span></div>
+                <select id="capRes" class="sgdb-field" aria-label="Resolution"><option value="0">Source</option><option value="720">720p</option><option value="1080">1080p</option><option value="1440">1440p</option></select>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Capture mode</strong><span><b>Whole display</b> records the screen the game is on; <b>Game window</b> records only the foreground game (no desktop, no overlays).</span></div>
+                <select id="capMode" class="sgdb-field" aria-label="Capture mode"><option value="display">Whole display</option><option value="game">Game window</option></select>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Estimated size</strong><span>Approximate disk use at these settings (real size varies with on-screen motion).</span></div>
+                <span class="kbd-hint" id="capSizeEst">≈ —</span>
+              </div>
+            </div>
+            <div class="panel section collapsible">
+              <div class="section-head"><div><h3>Dual screen</h3><p>Record two monitors into one clip with a layout you arrange — side&#8209;by&#8209;side, stacked, or picture&#8209;in&#8209;picture (a small screen inside the other, like a streamer's webcam). Locked to <b>H.264 · 60 fps · ~1080p per screen</b> for maximum compatibility; every monitor keeps its true shape — ultrawide included.</p></div></div>
+              <div class="setting-row">
+                <div class="label"><strong>Dual-screen capture</strong><span>Composite two displays into a single recording. Applies to <b>instant replay and manual recordings</b>, and overrides the encoder / framerate / resolution above.</span></div>
+                <button class="toggle" id="toggleCapDual" role="switch" aria-checked="false" aria-label="Dual-screen capture"></button>
+              </div>
+              <div id="capDualBody" class="locked" inert>
+                <div class="setting-row">
+                  <div class="label"><strong>Screen 1</strong><span>The first display to record.</span></div>
+                  <select id="capMonA" class="sgdb-field" aria-label="Screen 1 display"></select>
+                </div>
+                <div class="setting-row">
+                  <div class="label"><strong>Screen 2</strong><span>The second display. Pick <b>None</b> to record just one screen.</span></div>
+                  <select id="capMonB" class="sgdb-field" aria-label="Screen 2 display"></select>
+                </div>
+                <div class="cap-dual-design">
+                  <div class="cap-dual-presets">
+                    <span class="cap-dual-ptitle">Layout</span>
+                    <button type="button" class="cap-dual-preset" data-dpreset="side">Side by side</button>
+                    <button type="button" class="cap-dual-preset" data-dpreset="stack">Top / bottom</button>
+                    <button type="button" class="cap-dual-preset" data-dpreset="swap">Swap</button>
+                    <button type="button" class="cap-dual-preset" data-dpreset="pip">Picture-in-picture</button>
+                  </div>
+                  <div id="capDualCanvas" class="cap-dual-canvas" aria-label="Dual-screen layout designer"></div>
+                  <div class="cap-dual-out">Output <b id="capDualOut">—</b><span>drag to move · drag a corner to resize · × drops a screen (records just the other)</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="panel section collapsible">
+              <div class="section-head"><div><h3>Audio</h3><p>System / game audio is always recorded.</p></div></div>
+              <div class="setting-row">
+                <div class="label"><strong>Include microphone</strong><span>Record your microphone alongside game audio.</span></div>
+                <button class="toggle" id="toggleCapMic" role="switch" aria-checked="false" aria-label="Include microphone"></button>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Separate microphone track</strong><span>Keep the mic on its <b>own track</b> (not mixed into the clip) so the editor can trim, re-time and re-balance it independently. Applies to clips recorded from now on.</span></div>
+                <button class="toggle" id="toggleCapSepMic" role="switch" aria-checked="false" aria-label="Separate microphone track"></button>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Microphone device</strong><span>Which mic gets captured. <b>System default</b> follows Windows.</span></div>
+                <select id="capMicDevice" class="sgdb-field" aria-label="Microphone device"><option value="">System default</option></select>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Capture chat audio</strong><span>Record a <b>separate chat track</b> — e.g. your Discord voice chat (pick <b>App · Discord</b> as the source below) — so you can balance or mute it apart from game audio in the editor. Applies to clips recorded from now on.</span></div>
+                <button class="toggle" id="toggleCapChat" role="switch" aria-checked="false" aria-label="Capture chat audio"></button>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Chat source</strong><span><b>App · Discord</b> records just Discord's voice, whatever your volume sliders are set to. Or pick an <b>output</b> device to record via loopback; <b>System default</b> follows Windows.</span></div>
+                <select id="capChatDevice" class="sgdb-field" aria-label="Chat device"><option value="">System default</option></select>
+              </div>
+            </div>
+            <div class="panel section collapsible">
+              <div class="section-head"><div><h3>Automation &amp; storage</h3><p>Hands-off capture and how much disk clips may use.</p></div></div>
+              <div class="setting-row">
+                <div class="label"><strong>Auto-record on launch</strong><span>Start recording automatically whenever you launch a game, and stop when it exits.</span></div>
+                <button class="toggle" id="toggleCapAuto" role="switch" aria-checked="false" aria-label="Auto-record on launch"></button>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Storage limit</strong><span>When a new clip pushes the folder over this, the oldest clips are deleted automatically.</span></div>
+                <select id="capCap" class="sgdb-field" aria-label="Storage limit"><option value="0">Unlimited</option><option value="10">10 GB</option><option value="25">25 GB</option><option value="50">50 GB</option><option value="100">100 GB</option></select>
+              </div>
+            </div>
+            <div class="panel section collapsible">
+              <div class="section-head"><div><h3>Instant replay</h3><p>Always-on background buffer — never miss a moment. While a game runs the recorder keeps the recent past; press <b id="repHkHint">Ctrl+Alt+F10</b> to save just the last few seconds as a clip.</p></div></div>
+              <div class="setting-row">
+                <div class="label"><strong>Enable instant replay</strong><span>Arm the background buffer automatically when you launch a game. Takes precedence over full auto-record.</span></div>
+                <button class="toggle" id="toggleCapReplay" role="switch" aria-checked="false" aria-label="Enable instant replay"></button>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Auto-highlight · League / TFT</strong><span>Auto-saves a replay on your <b>kills &amp; assists</b> using Riot's official in-game API — no memory access, anti-cheat-safe. Needs Instant replay on; off by default.</span></div>
+                <button class="toggle" id="toggleCapAutoHighlight" role="switch" aria-checked="false" aria-label="Auto-highlight League / TFT"></button>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Replay length · <span id="capReplayLenVal">30s</span></strong><span>How many seconds back the <b>Save replay</b> hotkey captures — anywhere from 10s to 2 minutes.</span></div>
+                <input type="range" id="capReplayLen" min="10" max="120" step="1" value="30" style="max-width:260px" aria-label="Replay length (seconds)" />
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Replay clip size</strong><span>Roughly this much per saved replay at the current length &amp; quality.</span></div>
+                <span class="kbd-hint" id="capReplaySizeEst">≈ —</span>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Capture sound</strong><span>Play a short chime the moment a replay is saved — a clear "got it" while you're in a game with the launcher hidden.</span></div>
+                <button class="toggle" id="toggleCapChime" role="switch" aria-checked="true" aria-label="Capture sound"></button>
+              </div>
+            </div>
+            <div class="panel section collapsible">
+              <div class="section-head"><div><h3>Folder &amp; hotkey</h3><p>Where clips are saved and how to record by hand.</p></div></div>
+              <div class="setting-row">
+                <div class="label"><strong>Save folder</strong><span id="capFolderPath" class="hint">…</span></div>
+                <div class="hotkey-ctrls">
+                  <button class="action-btn" id="capChangeFolder">Change…</button>
+                  <button class="action-btn" id="capOpenFolder">Open folder</button>
+                  <button class="tiny-btn" id="capResetFolder" title="Reset to the default Videos\Sparta Clips\Clips folder">Reset</button>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Record hotkey</strong><span>Start / stop a recording from anywhere. Click to rebind, then press your combo.</span></div>
+                <div class="hotkey-ctrls">
+                  <button class="kbd-hint kbd-set" id="capRecHotkey" title="Click, then press a key combo">Ctrl + Alt + F9</button>
+                  <button class="tiny-btn" id="capRecHotkeyReset" title="Reset to default">Reset</button>
+                  <button class="tiny-btn" id="capRecHotkeyClear" title="Clear — disable this hotkey">Clear</button>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Save replay hotkey</strong><span>Save the last few seconds while instant replay is armed. Click to rebind.</span></div>
+                <div class="hotkey-ctrls">
+                  <button class="kbd-hint kbd-set" id="capRepHotkey" title="Click, then press a key combo">Ctrl + Alt + F10</button>
+                  <button class="tiny-btn" id="capRepHotkeyReset" title="Reset to default">Reset</button>
+                  <button class="tiny-btn" id="capRepHotkeyClear" title="Clear — disable this hotkey">Clear</button>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Mark-a-moment hotkey</strong><span>Drop a bookmark on the running recording — the editor shows your marks on the timeline. Click to rebind.</span></div>
+                <div class="hotkey-ctrls">
+                  <button class="kbd-hint kbd-set" id="capMarkHotkey" title="Click, then press a key combo">Ctrl + Alt + F8</button>
+                  <button class="tiny-btn" id="capMarkHotkeyReset" title="Reset to default">Reset</button>
+                  <button class="tiny-btn" id="capMarkHotkeyClear" title="Clear — disable this hotkey">Clear</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Per-game capture profiles: override quality per game (applied to full recordings). -->
+            <div class="panel section collapsible">
+              <div class="section-head"><div><h3>Per-game profiles</h3><p>Override capture quality for specific games. When a recording's game name contains a profile's match text, that profile's settings apply instead of the defaults above. Affects full recordings (the instant-replay buffer always uses the defaults).</p></div></div>
+              <div id="gameProfiles" class="game-profiles"></div>
+              <div class="setting-row">
+                <button class="action-btn" id="addGameProfile">＋ Add profile</button>
+              </div>
+            </div>
+
+            <!-- App shell settings (standalone-only): arm policy, autostart, close behaviour, quit + logs. -->
+            <div class="panel section collapsible">
+              <div class="section-head"><div><h3>Sparta Clips</h3><p>App startup and window behaviour.</p></div></div>
+              <div class="setting-row">
+                <div class="label"><strong>Instant-replay policy</strong><span><b>Always armed</b> keeps the background buffer rolling whenever Sparta Clips runs. <b>Only in a game</b> arms it when a game is detected in the foreground.</span></div>
+                <select id="setArmPolicy" class="sgdb-field" aria-label="Instant replay policy"><option value="always">Always armed</option><option value="game">Only in a game</option></select>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Start with Windows</strong><span>Launch Sparta Clips to the tray on sign-in so instant replay is ready.</span></div>
+                <button class="toggle" id="toggleAutostart" role="switch" aria-checked="false" aria-label="Start with Windows"></button>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Start elevated (anti-cheat games)</strong><span>Starts as administrator via a scheduled task, so the record / save-replay hotkeys keep working over <b>elevated</b> fullscreen games. Windows asks for approval once when you toggle this.</span></div>
+                <button class="toggle" id="toggleAutostartElev" role="switch" aria-checked="false" aria-label="Start elevated"></button>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Keep running when closed</strong><span>On the window's X, keep Sparta Clips in the tray (capture &amp; instant replay stay alive). Turn off to quit fully on close.</span></div>
+                <button class="toggle" id="toggleReleaseOnClose" role="switch" aria-checked="true" aria-label="Keep running when closed"></button>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>In-game recording indicator</strong><span>Show a small <b>● REC</b> timer over the game while a full recording runs, so you always know capture is live.</span></div>
+                <button class="toggle" id="toggleOverlay" role="switch" aria-checked="true" aria-label="In-game recording indicator"></button>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Diagnostics</strong><span>Open the folder with Sparta Clips' logs — handy when reporting a bug.</span></div>
+                <button class="action-btn" id="openLogsBtn">Open logs</button>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Quit Sparta Clips</strong><span>Stop capture and close the app fully (removes it from the tray).</span></div>
+                <button class="action-btn danger" id="quitAppBtn">Quit Sparta Clips</button>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Bridge</strong><span id="nativeBadge" class="hint">Browser preview mode</span></div>
+                <span class="hint">Sparta Clips v0.1</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Share to Discord popup -->
+  <div id="sharePopup" class="share-pop" hidden>
+    <div class="share-card">
+      <div class="share-head"><strong>Share to Discord</strong><button class="share-x" id="shareClose" aria-label="Close">✕</button></div>
+      <div class="share-namerow"><span class="share-lbl">File</span><input id="shareName" class="share-name" maxlength="90" spellcheck="false" aria-label="File name"></div>
+      <div class="share-row share-quality">
+        <div class="share-qcol"><span class="share-lbl">Size</span><div class="share-seg" id="shareTier"></div></div>
+        <div class="share-qcol"><span class="share-lbl">FPS</span><div class="share-seg" id="shareFps"></div></div>
+      </div>
+      <div class="share-drag busy" id="shareDragBox">
+        <div class="share-drag-ic"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="m7 9 5 5 5-5"/><rect x="4" y="17" width="16" height="4" rx="1.5"/></svg></div>
+        <div class="share-drag-txt" id="shareDragTxt">Preparing clip…</div>
+        <div class="share-drag-sub">Click &amp; hold, then drag straight into your Discord chat</div>
+      </div>
+      <div class="share-status" id="shareStatus" hidden></div>
+      <div class="share-actions">
+        <button class="action-btn primary" id="shareCopy">Copy for Discord</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sparta Clips player + trim editor — a full PAGE (not a modal): big video, actions on the right, drag-to-cut timeline below. -->
+  <div id="clipPage" hidden>
+    <div class="clip-left">
+    <div class="clip-top">
+      <button class="clip-back" id="clipBack" title="Back to Gallery" aria-label="Back to Gallery"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg></button>
+      <div class="clip-head">
+        <div class="clip-name-row"><input id="clipRename" type="text" class="clip-name-input" maxlength="80" aria-label="Clip name"><button class="tiny-btn" id="clipRenameBtn">Rename</button></div>
+        <div class="clip-meta" id="clipMeta"></div>
+      </div>
+    </div>
+      <div class="clip-stage">
+        <!-- Video plays IN-PAGE via an HTML5 <video> (H.264/AV1 decode natively; HEVC natively with the OS codec, else via a cached H.264 proxy).
+             Click toggles play/pause with a brief ▶/⏸ flash; mic/chat still play as Web-Audio buffer sources. -->
+        <div class="clip-video-area"><div class="clip-video-wrap" id="clipStage">
+          <video id="clipVideo" class="clip-video" playsinline preload="auto" tabindex="-1"></video>
+          <div class="clip-flash" id="clipFlash" aria-hidden="true"></div>
+          <div class="clip-hevc-warn" id="clipHevcWarn" hidden></div>
+          <div class="clip-prep" id="clipPrep" hidden><span class="clip-prep-spin"></span>Preparing preview…</div>
+        </div></div>
+        <div class="clip-editor">
+          <div class="clip-transport">
+            <button class="clip-tp-step" id="clipStepBack" title="Previous keyframe (←)" aria-label="Previous keyframe">⏮</button>
+            <button class="clip-tp-play" id="clipPlayPause" aria-label="Play / Pause">▶</button>
+            <button class="clip-tp-step" id="clipStepFwd" title="Next keyframe (→)" aria-label="Next keyframe">⏭</button>
+            <span class="clip-tp-time"><b id="clipTimeCur">0:00</b> / <span id="clipTimeDur">0:00</span></span>
+            <button class="clip-tp-mark" id="clipAddMark" title="Add a bookmark at the current spot">🔖 Mark</button>
+          </div>
+          <div class="clip-track-label">Video <span class="hint">· space play · ←/→ step · I/O in-out · M mark</span></div>
+          <input type="range" id="clipSeek" class="clip-seek" min="0" max="1000" step="1" value="0" aria-label="Seek position">
+          <div class="clip-tl" id="clipTl">
+            <div class="clip-tl-fill" id="clipTlFill"></div>
+            <div class="clip-playhead" id="clipPlayhead"></div>
+            <div class="clip-handle in" id="clipHIn"></div>
+            <div class="clip-handle out" id="clipHOut"></div>
+          </div>
+          <div class="clip-tl-row"><span id="clipTlIn">0:00</span><span class="clip-sel-len" id="clipSelLen"></span><span id="clipTlOut">0:00</span></div>
+          <div class="clip-marks" id="clipMarks"></div>
+          <div class="clip-segs" id="clipSegs"></div>
+          <div class="clip-mic" id="clipChatSection" hidden>
+            <div class="clip-track-label">Chat <span class="hint">· drag to align, handles to trim</span></div>
+            <div class="clip-tl mic" id="clipChatTl">
+              <div class="clip-playhead" id="clipChatPlayhead"></div>
+              <div class="clip-mic-clip" id="clipChatClip">
+                <canvas class="clip-wave" id="clipChatWave"></canvas>
+                <div class="clip-handle in" id="clipChatHIn"></div>
+                <div class="clip-handle out" id="clipChatHOut"></div>
+              </div>
+            </div>
+            <div class="clip-tl-row"><span id="clipChatTlIn">0:00</span><button class="gal-btn danger" id="clipChatDelBtn">Delete chat track</button><span id="clipChatTlOut">0:00</span></div>
+          </div>
+          <div class="clip-mic" id="clipMicSection" hidden>
+            <div class="clip-track-label">Microphone <span class="hint">· drag to align, handles to trim</span></div>
+            <div class="clip-tl mic" id="clipMicTl">
+              <div class="clip-playhead" id="clipMicPlayhead"></div>
+              <div class="clip-mic-clip" id="clipMicClip">
+                <canvas class="clip-wave" id="clipMicWave"></canvas>
+                <div class="clip-handle in" id="clipMicHIn"></div>
+                <div class="clip-handle out" id="clipMicHOut"></div>
+              </div>
+            </div>
+            <div class="clip-tl-row"><span id="clipMicTlIn">0:00</span><button class="gal-btn danger" id="clipMicDelBtn">Delete mic track</button><span id="clipMicTlOut">0:00</span></div>
+          </div>
+          <div class="clip-vol">
+            <div class="clip-vol-row"><span class="clip-vol-name">Video volume</span><b class="clip-vol-val" id="clipVidVolVal">100%</b><input type="range" id="clipVidVol" min="0" max="100" step="5" value="100" aria-label="Video track volume"><span class="clip-mute-gap" aria-hidden="true"></span></div>
+            <div class="clip-vol-row" id="clipChatVolRow" hidden><span class="clip-vol-name">Chat volume</span><b class="clip-vol-val" id="clipChatVolVal">100%</b><input type="range" id="clipChatVol" min="0" max="200" step="5" value="100" aria-label="Chat track volume"><button class="clip-mute" id="clipChatMute" aria-pressed="false" title="Mute chat track" aria-label="Mute chat track"><svg class="ico-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.5 8.5a5 5 0 0 1 0 7"></path><path d="M18.5 5.5a9 9 0 0 1 0 13"></path></svg><svg class="ico-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg></button></div>
+            <div class="clip-vol-row" id="clipMicVolRow" hidden><span class="clip-vol-name">Mic volume</span><b class="clip-vol-val" id="clipMicVolVal">100%</b><input type="range" id="clipMicVol" min="0" max="200" step="5" value="100" aria-label="Mic track volume"><button class="clip-mute" id="clipMicMute" aria-pressed="false" title="Mute mic track" aria-label="Mute mic track"><svg class="ico-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.5 8.5a5 5 0 0 1 0 7"></path><path d="M18.5 5.5a9 9 0 0 1 0 13"></path></svg><svg class="ico-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg></button></div>
+          </div>
+          <!-- One-row action bar: left = utility (Preview / Fill / ⋯ Open+Delete), right = commit (Add segment / Share / Create). -->
+          <div class="clip-actions">
+            <div class="clip-actions-left">
+              <button class="gal-btn" id="clipPreview">Preview selection</button>
+              <button class="gal-btn" id="clipFillBtn" title="Fill or fit the video in its box"><span id="clipFillLabel">Fill player</span></button>
+              <div class="clip-more">
+                <button class="gal-btn ico" id="clipMoreBtn" title="More actions" aria-label="More actions" aria-expanded="false"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button>
+                <div class="clip-more-menu" id="clipMoreMenu" hidden>
+                  <button id="clipOpenBtn" title="Reveal this clip in Explorer">Open folder</button>
+                  <button id="clipDeleteBtn" class="danger" title="Delete this clip">Delete clip</button>
+                </div>
+              </div>
+            </div>
+            <div class="clip-actions-right">
+              <button class="gal-btn" id="clipAddSeg" title="Save the current selection as a segment; Create exports every saved segment">＋ Add segment</button>
+              <button class="gal-btn" id="clipCombine" title="Merge all saved segments into one clip" hidden>Combine → 1</button>
+              <button class="gal-btn" id="clipExportBtn" title="Export the selection to a file (MP4 or GIF)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:.35rem"><path d="M12 3v12M8 11l4 4 4-4M4 21h16"/></svg>Export</button>
+              <button class="gal-btn share-btn" id="clipShareBtn" title="Share this clip to Discord (size tier + fps)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:.35rem"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg>Share</button>
+              <button class="gal-btn primary" id="clipCreate">Create clip</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
+      <div class="clip-rail">
+        <div class="clip-recent-head">Recent clips</div>
+        <div class="clip-recent" id="clipRecent"></div>
+      </div>
+  </div>
+
+  <!-- Command palette (Ctrl/⌘+K): quick actions + jump to a recent clip. -->
+  <div id="cmdPalette" class="cmdp" hidden>
+    <div class="cmdp-box" role="dialog" aria-label="Command palette">
+      <div class="cmdp-search"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input id="cmdInput" type="text" placeholder="Type a command…  (Record · Settings · open a clip)" autocomplete="off" spellcheck="false"></div>
+      <div class="cmdp-list" id="cmdList"></div>
+    </div>
+  </div>
+
+  <div class="toast-wrap" id="toastWrap" role="status" aria-live="polite" aria-atomic="false"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
