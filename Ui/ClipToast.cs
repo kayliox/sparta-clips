@@ -20,7 +20,8 @@ namespace SpartaClips
     internal static class ClipToast
     {
         // ── layout at 96 DPI (scaled per monitor) ──
-        private const int W = 360, H = 70, RADIUS = 16, MARGIN = 20, ICON = 36;
+        private const int H = 70, RADIUS = 16, MARGIN = 20, ICON = 36;
+        private const int MIN_W = 220, MAX_W = 520;   // card width follows the text (before: a fixed 360 px — far too wide for short messages)
         private const int ANIM_IN_MS = 190, ANIM_OUT_MS = 230, SLIDE = 12;
 
         private static ToastForm? _form;
@@ -30,6 +31,8 @@ namespace SpartaClips
         private static DateTime _shownAt, _expiresAt, _hideAt;
         private static bool _hiding, _visible;
         private static float _spin;
+        private static float _curW = -1;          // animated width (logical px); snaps on a fresh show, eases when the text changes
+        private static string _fitKey = ""; private static float _fitW;
 
         /// <summary>Show (or update in place) the over-the-game notification. Skipped while our own window is focused —
         /// the in-WebView toast covers that case. Busy stays up until replaced (capped at 90 s).</summary>
@@ -45,7 +48,7 @@ namespace SpartaClips
                 bool wasVisible = _visible && !_hiding;
                 _kind = kind; _title = title ?? ""; _sub = sub ?? "";
                 var now = DateTime.UtcNow;
-                if (!wasVisible) _shownAt = now;   // already up → morph in place (no second slide-in)
+                if (!wasVisible) { _shownAt = now; _curW = -1; }   // already up → morph in place (no second slide-in)
                 _expiresAt = now + TimeSpan.FromMilliseconds(kind switch { ToastKind.Busy => 90000, ToastKind.Success => 3200, _ => 4800 });
                 _hiding = false; _visible = true;
 
@@ -79,7 +82,10 @@ namespace SpartaClips
 
             float sc = Math.Max(1f, _form.DeviceDpi / 96f);
             var scr = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
-            int w = (int)(W * sc), h = (int)(H * sc);
+            float target = FitWidth(sc);
+            _curW = _curW < 0 ? target : _curW + (target - _curW) * 0.22f;   // "Saving replay…" → longer "Replay saved · Game" grows smoothly
+            if (Math.Abs(target - _curW) < 0.5f) _curW = target;
+            int w = (int)Math.Round(_curW * sc), h = (int)(H * sc);
             int x = scr.X + (int)(MARGIN * sc), y = scr.Y + (int)((MARGIN + offset) * sc);
 
             double life = _kind == ToastKind.Busy ? -1
@@ -125,8 +131,8 @@ namespace SpartaClips
             DrawIcon(g, new RectangleF(ix, iy, isz, isz), sc);
 
             float tx = ix + isz + 13 * sc, tw = w - tx - 14 * sc;
-            using var fTitle = new Font("Segoe UI Semibold", 11.25f * sc, FontStyle.Regular, GraphicsUnit.Point);
-            using var fSub = new Font("Segoe UI", 9.25f * sc, FontStyle.Regular, GraphicsUnit.Point);
+            using var fTitle = TitleFont(sc);
+            using var fSub = SubFont(sc);
             using var fmt = new StringFormat(StringFormatFlags.NoWrap) { Trimming = StringTrimming.EllipsisCharacter, LineAlignment = StringAlignment.Center };
             bool two = _sub.Length > 0;
             float lineH = h / 2f;
@@ -135,6 +141,28 @@ namespace SpartaClips
             if (two) using (var b = new SolidBrush(Color.FromArgb(160, 160, 172)))
                 g.DrawString(_sub, fSub, b, new RectangleF(tx, h * 0.5f, tw, lineH * 0.78f), fmt);
             return bmp;
+        }
+
+        private static Font TitleFont(float sc) => new("Segoe UI Semibold", 11.25f * sc, FontStyle.Regular, GraphicsUnit.Point);
+        private static Font SubFont(float sc) => new("Segoe UI", 9.25f * sc, FontStyle.Regular, GraphicsUnit.Point);
+
+        // Card width (logical px) = icon + gap + the wider of the two text lines + right padding, clamped. Cached per text.
+        private static float FitWidth(float sc)
+        {
+            string key = _title + "|" + _sub + "|" + sc;
+            if (key == _fitKey) return _fitW;
+            float textW = 0;
+            try
+            {
+                using var bmp = new Bitmap(1, 1); using var g = Graphics.FromImage(bmp);
+                g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+                using var fT = TitleFont(sc); using var fS = SubFont(sc);
+                textW = Math.Max(g.MeasureString(_title, fT).Width, _sub.Length > 0 ? g.MeasureString(_sub, fS).Width : 0) / sc;
+            }
+            catch { textW = 240; }
+            _fitKey = key;
+            _fitW = Math.Clamp(16 + ICON + 13 + textW + 18, MIN_W, MAX_W);
+            return _fitW;
         }
 
         private static void DrawIcon(Graphics g, RectangleF r, float sc)
