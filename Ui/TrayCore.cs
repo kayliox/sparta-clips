@@ -46,15 +46,18 @@ namespace SpartaClips
             {
                 try
                 {
-                    if      (ev == "saved")    _ui.BeginInvoke(new Action(() => ClipToast.Show("✓  Clip saved")));
-                    else if (ev == "recfail")  _ui.BeginInvoke(new Action(() => ClipToast.Show("✗  Recording failed")));
-                    else if (ev == "trimfail") _ui.BeginInvoke(new Action(() => ClipToast.Show("✗  Replay save failed")));
-                    else if (ev == "noreplay") _ui.BeginInvoke(new Action(() => ClipToast.Show("Nothing to save yet")));
-                    else if (ev == "av1fail")  _ui.BeginInvoke(new Action(() => ClipToast.Show("AV1 encode failed — saved as H.264")));
-                    else if (ev == "micfail")  _ui.BeginInvoke(new Action(() => ClipToast.Show("✗  Microphone couldn't be captured")));
-                    else if (ev == "disklow")  _ui.BeginInvoke(new Action(() => ClipToast.Show("Disk almost full — recording stopped & saved")));
-                    else if (ev == "marked")    _ui.BeginInvoke(new Action(() => ClipToast.Show("✓  Moment marked")));
-                    else if (ev == "marknorec") _ui.BeginInvoke(new Action(() => ClipToast.Show("Not recording — nothing to mark")));
+                    // "saving" fires the instant the hotkey lands (with the chime) → the toast morphs into "saved" when the
+                    // clip is actually on disk. before: nothing visible until the save + AV1 conversion finished.
+                    if      (ev == "saving")    Toast(ToastKind.Busy,    "Saving replay…", "Last " + ClipRecorder.ReplayLenSeconds + " seconds");
+                    else if (ev == "saved")     Toast(ToastKind.Success, SavedTitle(json), SavedDetail(json));
+                    else if (ev == "recfail")   Toast(ToastKind.Error,   "Recording failed", JsonField(json, "reason") ?? "Try again in a moment");
+                    else if (ev == "trimfail")  Toast(ToastKind.Error,   "Couldn't save the replay", "Try again in a moment");
+                    else if (ev == "noreplay")  Toast(ToastKind.Warning, "Nothing to save yet", "Instant replay isn't running");
+                    else if (ev == "av1fail")   Toast(ToastKind.Warning, "Saved as H.264", "AV1 conversion failed — your clip is safe");
+                    else if (ev == "micfail")   Toast(ToastKind.Error,   "Microphone unavailable", "Check Windows microphone privacy settings");
+                    else if (ev == "disklow")   Toast(ToastKind.Warning, "Disk almost full", "Recording stopped and saved");
+                    else if (ev == "marked")    Toast(ToastKind.Success, "Moment marked", "Bookmark added at this point");
+                    else if (ev == "marknorec") Toast(ToastKind.Warning, "Not recording", "Start a recording to mark moments");
                     else if (ev == "state" && json != null)
                     {   // in-game "● REC m:ss" overlay follows the recording state (gated by the settings toggle)
                         if (json.Contains("\"recording\":true")) { if (AppConfig.OverlayEnabled()) _ui.BeginInvoke(new Action(ClipStatusOverlay.Start)); }
@@ -181,7 +184,26 @@ namespace SpartaClips
         {
             var (rm, rv, pm, pv, mm, mv) = AppConfig.Hotkeys();
             ClipHotkeyHook.Configure(rm, rv, pm, pv, mm, mv, FireRecordToggle, FireSaveReplay, FireMarkMoment);
-            if (!ClipHotkeyHook.Install()) _ui.BeginInvoke(new Action(() => ClipToast.Show("⚠  Global hotkeys unavailable — try running as administrator")));
+            if (!ClipHotkeyHook.Install()) Toast(ToastKind.Warning, "Hotkeys unavailable", "Try running Sparta Clips as administrator");
+        }
+        private void Toast(ToastKind kind, string title, string sub) { try { _ui.BeginInvoke(new Action(() => ClipToast.Show(kind, title, sub))); } catch { } }
+        private static string? JsonField(string? json, string key)
+        {
+            try { return string.IsNullOrEmpty(json) ? null : (string?)Newtonsoft.Json.Linq.JObject.Parse(json)[key]; } catch { return null; }
+        }
+        // "Game_20.10.2026.17.03_replay.mp4" → "Replay saved" / "Game · 30 s"
+        private static string SavedTitle(string? json)
+        {
+            string n = JsonField(json, "name") ?? "";
+            return n.Contains("_replay", StringComparison.OrdinalIgnoreCase) ? "Replay saved" : "Clip saved";
+        }
+        private static string SavedDetail(string? json)
+        {
+            string n = System.IO.Path.GetFileNameWithoutExtension(JsonField(json, "name") ?? "");
+            var m = System.Text.RegularExpressions.Regex.Match(n, @"^(.*)_\d{2}\.\d{2}\.\d{4}\.\d{2}\.\d{2}");
+            string game = (m.Success ? m.Groups[1].Value : n).Replace('_', ' ').Trim();
+            bool replay = n.Contains("_replay", StringComparison.OrdinalIgnoreCase);
+            return replay ? (game.Length > 0 ? game + "  ·  " : "") + ClipRecorder.ReplayLenSeconds + " s" : game;
         }
         // Rebind from the settings UI; persisted by the web layer into config.json (state). Returns whether the hook is active.
         public bool SetClipHotkeys(uint recMods, uint recVk, uint repMods, uint repVk, uint markMods, uint markVk)

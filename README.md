@@ -137,6 +137,7 @@ architecture, design invariants and C#↔JS contracts.
 ./deploy.ps1                  # build Release (x64) + stage to SpartaClips-final\, then run it
 ./installer/build.ps1         # self-contained publish + Inno Setup -> artifacts\SpartaClipsSetup.exe
 python tools/make_icon.py     # re-render app.ico + docs/icon.png after editing docs/icon.svg (needs Pillow)
+python tools/make_chime.py    # re-synthesize the "clip captured" sound -> Services/Capture/chime.wav (needs numpy)
 ```
 Development builds need the .NET 8 SDK and the WebView2 Runtime (x64 only — ScreenRecorderLib is x64-native).
 `SpartaClips.exe --tray` starts hidden to the tray (used by autostart).

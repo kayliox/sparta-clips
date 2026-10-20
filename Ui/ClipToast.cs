@@ -1,91 +1,222 @@
-// A small top-most, click-through, no-activate overlay that confirms "Clip saved" OVER a fullscreen game. Draw-only
-// WinForms window — never injects into the game, so it's anti-cheat-safe like the WGC capture. Rounded navy pill +
-// a warm accent bar. Ported from Sparta Dock's MainForm.ClipToast.cs into a STANDALONE class so it can fire when the
-// app is tray-only (no MainForm) — before: it was a MainForm partial and needed the window to exist.
+// Over-the-game notification ("Saving replay…" → "Replay saved", errors, warnings). A top-most, click-through,
+// no-activate PER-PIXEL-ALPHA window (UpdateLayeredWindow) drawn in the app's style: dark card, faint rim, a status
+// icon (gradient check / spinning ring / amber ! / red ✕), a title + detail line, and a thin "time left" bar. Fades +
+// slides in and out. Draw-only (never injects into the game) and excluded from screen capture, so it is anti-cheat-
+// safe and never burned into the clip it announces.
+// before: a 300×46 Region-clipped pill (jagged corners), one line of text, no animation, and it only appeared once the
+// clip was FINISHED — after an AV1 conversion that could be seconds after the hotkey.
 // Call Show() on the UI thread (TrayCore marshals to it).
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Text;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace SpartaClips
 {
+    internal enum ToastKind { Success, Busy, Warning, Error }
+
     internal static class ClipToast
     {
-        [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
-        [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
-        [DllImport("user32.dll")] private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint affinity);
-        private const uint SWP_NOACTIVATE = 0x0010;
-        private const uint WDA_EXCLUDEFROMCAPTURE = 0x11;   // toast visible to the USER, invisible to the capture — a "Moment marked" toast must not be recorded into the moment
+        // ── layout at 96 DPI (scaled per monitor) ──
+        private const int W = 344, H = 66, RADIUS = 16, MARGIN = 20, ICON = 34;
+        private const int ANIM_IN_MS = 190, ANIM_OUT_MS = 230, SLIDE = 12;
 
-        private sealed class ToastForm : Form
-        {
-            public string Text2 = "";
-            protected override bool ShowWithoutActivation => true;
-            protected override CreateParams CreateParams
-            {
-                get { var cp = base.CreateParams; cp.ExStyle |= 0x08000000 | 0x00000080 | 0x00000020; return cp; }
-            }
-            public ToastForm() { DoubleBuffered = true; }
-            protected override void OnPaintBackground(PaintEventArgs e) { }
-            protected override void OnPaint(PaintEventArgs e)
-            {
-                var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
-                var r = new Rectangle(0, 0, Width - 1, Height - 1);
-                using var path = Rounded(r, 14);
-                using (var bg = new LinearGradientBrush(r, Color.FromArgb(18, 22, 38), Color.FromArgb(9, 12, 22), 90f)) g.FillPath(bg, path);
-                var bar = new Rectangle(r.X + 9, r.Y + 11, 5, r.Height - 22);
-                using (var ab = new LinearGradientBrush(new Rectangle(bar.X, bar.Y, bar.Width, bar.Height + 1), Color.FromArgb(255, 206, 84), Color.FromArgb(255, 99, 132), 90f))
-                using (var abp = Rounded(bar, 2)) g.FillPath(ab, abp);
-                var textRect = new Rectangle(r.X + 26, r.Y, r.Width - 32, r.Height);
-                TextRenderer.DrawText(g, Text2, Font, textRect, Color.White, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
-                using (var pen = new Pen(Color.FromArgb(55, 255, 255, 255))) g.DrawPath(pen, path);
-            }
-            private static GraphicsPath Rounded(Rectangle r, int rad)
-            {
-                int d = rad * 2; var p = new GraphicsPath();
-                p.AddArc(r.X, r.Y, d, d, 180, 90); p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-                p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90); p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
-                p.CloseFigure(); return p;
-            }
-            protected override void OnResize(EventArgs e) { base.OnResize(e); try { using var p = Rounded(new Rectangle(0, 0, Width, Height), 14); Region = new Region(p); } catch { } }
-        }
+        private static ToastForm? _form;
+        private static Timer? _tick;
+        private static ToastKind _kind;
+        private static string _title = "", _sub = "";
+        private static DateTime _shownAt, _expiresAt, _hideAt;
+        private static bool _hiding, _visible;
+        private static float _spin;
 
-        private static ToastForm? _toast;
-        private static System.Windows.Forms.Timer? _timer;
-
-        /// <summary>Flash a brief over-the-game confirmation. Skipped when our own window is focused — the in-WebView
-        /// toast already covers that windowed/desktop case (avoids a double toast). UI-thread only.</summary>
-        public static void Show(string text)
+        /// <summary>Show (or update in place) the over-the-game notification. Skipped while our own window is focused —
+        /// the in-WebView toast covers that case. Busy stays up until replaced (capped at 90 s).</summary>
+        public static void Show(ToastKind kind, string title, string sub = "")
         {
             try
             {
                 IntPtr ui = MainForm.Instance?.IsHandleCreated == true ? MainForm.Instance.Handle : IntPtr.Zero;
-                if (ui != IntPtr.Zero && GetForegroundWindow() == ui) return;   // our window is up front → the WebView toast handles it
-                var scr = Screen.PrimaryScreen;
-                var b = scr?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
-                if (_toast == null)
-                    _toast = new ToastForm
-                    {
-                        FormBorderStyle = FormBorderStyle.None, StartPosition = FormStartPosition.Manual,
-                        ShowInTaskbar = false, TopMost = true, Opacity = 0.96,
-                        Font = new Font("Segoe UI", 11.5F, FontStyle.Bold),
-                    };
-                _toast.Text2 = text;
-                int w = 300, h = 46, x = b.X + 18, y = b.Y + 18;
-                _toast.Bounds = new Rectangle(x, y, w, h);
-                _toast.Show();
-                try { SetWindowDisplayAffinity(_toast.Handle, WDA_EXCLUDEFROMCAPTURE); } catch { }   // never burn the toast into a running capture
-                try { _toast.TopMost = true; SetWindowPos(_toast.Handle, new IntPtr(-1) /*HWND_TOPMOST*/, x, y, w, h, SWP_NOACTIVATE); } catch { }
-                _toast.Invalidate();
-                try { _toast.Update(); } catch { }
-                try { _timer?.Stop(); _timer?.Dispose(); } catch { }
-                _timer = new System.Windows.Forms.Timer { Interval = 3000 };
-                _timer.Tick += (s, e) => { try { _timer?.Stop(); } catch { } try { _toast?.Hide(); } catch { } };
-                _timer.Start();
+                if (ui != IntPtr.Zero && GetForegroundWindow() == ui) return;
+
+                _form ??= new ToastForm();
+                if (!_form.IsHandleCreated) _form.CreateControl();
+                bool wasVisible = _visible && !_hiding;
+                _kind = kind; _title = title ?? ""; _sub = sub ?? "";
+                var now = DateTime.UtcNow;
+                if (!wasVisible) _shownAt = now;   // already up → morph in place (no second slide-in)
+                _expiresAt = now + TimeSpan.FromMilliseconds(kind switch { ToastKind.Busy => 90000, ToastKind.Success => 3200, _ => 4800 });
+                _hiding = false; _visible = true;
+
+                if (!_form.Visible)
+                {
+                    ShowWindow(_form.Handle, 4 /*SW_SHOWNOACTIVATE*/);
+                    try { SetWindowDisplayAffinity(_form.Handle, 0x11 /*WDA_EXCLUDEFROMCAPTURE*/); } catch { }
+                }
+                if (_tick == null) { _tick = new Timer { Interval = 16 }; _tick.Tick += (s, e) => Frame(); }
+                _tick.Start();
+                Frame();
             }
             catch { }
         }
+
+        private static void Frame()
+        {
+            if (_form == null) return;
+            var now = DateTime.UtcNow;
+            if (!_hiding && now >= _expiresAt) { _hiding = true; _hideAt = now; }
+
+            double tin = Math.Clamp((now - _shownAt).TotalMilliseconds / ANIM_IN_MS, 0, 1);
+            double alpha = EaseOut(tin), offset = (1 - EaseOut(tin)) * -SLIDE;
+            if (_hiding)
+            {
+                double tout = Math.Clamp((now - _hideAt).TotalMilliseconds / ANIM_OUT_MS, 0, 1);
+                alpha *= 1 - EaseIn(tout); offset += EaseIn(tout) * -SLIDE * 0.6;
+                if (tout >= 1) { _tick?.Stop(); _visible = false; ShowWindow(_form.Handle, 0 /*SW_HIDE*/); return; }
+            }
+            _spin = (_spin + 7f) % 360f;
+
+            float sc = Math.Max(1f, _form.DeviceDpi / 96f);
+            var scr = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
+            int w = (int)(W * sc), h = (int)(H * sc);
+            int x = scr.X + (int)(MARGIN * sc), y = scr.Y + (int)((MARGIN + offset) * sc);
+
+            double life = _kind == ToastKind.Busy ? -1
+                : Math.Clamp((_expiresAt - now).TotalMilliseconds / (_expiresAt - _shownAt).TotalMilliseconds, 0, 1);
+            using var bmp = Render(w, h, sc, life);
+            Present(_form.Handle, bmp, x, y, (byte)Math.Round(alpha * 255));
+        }
+
+        private static double EaseOut(double t) => 1 - Math.Pow(1 - t, 3);
+        private static double EaseIn(double t) => t * t;
+
+        // ── drawing ──
+        private static readonly Color AccentA = Color.FromArgb(255, 59, 78), AccentB = Color.FromArgb(155, 92, 246);
+
+        private static Bitmap Render(int w, int h, float sc, double life)
+        {
+            var bmp = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+            using var g = Graphics.FromImage(bmp);
+            g.SmoothingMode = SmoothingMode.AntiAlias; g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;   // ClearType can't render onto a transparent bitmap
+            g.Clear(Color.Transparent);
+
+            var card = new RectangleF(0.5f, 0.5f, w - 1f, h - 1f);
+            using (var path = Rounded(card, RADIUS * sc))
+            {
+                using (var bg = new LinearGradientBrush(card, Color.FromArgb(248, 30, 30, 38), Color.FromArgb(248, 15, 15, 20), 90f)) g.FillPath(bg, path);
+                // time-left bar along the bottom edge (clipped to the card's rounded shape)
+                if (life > 0)
+                {
+                    var st = g.Save(); g.SetClip(path);
+                    float bh = 2.5f * sc, bw = (float)(card.Width * life);
+                    var bar = new RectangleF(card.X, card.Bottom - bh, Math.Max(1f, bw), bh);
+                    using (var ab = new LinearGradientBrush(new RectangleF(card.X, bar.Y, card.Width, bh), AccentA, AccentB, 0f)) g.FillRectangle(ab, bar);
+                    g.Restore(st);
+                }
+                using (var rim = new Pen(Color.FromArgb(34, 255, 255, 255), 1f)) g.DrawPath(rim, path);
+            }
+
+            float isz = ICON * sc, ix = 16 * sc, iy = (h - isz) / 2f;
+            DrawIcon(g, new RectangleF(ix, iy, isz, isz), sc);
+
+            float tx = ix + isz + 13 * sc, tw = w - tx - 14 * sc;
+            using var fTitle = new Font("Segoe UI Semibold", 10.5f * sc, FontStyle.Regular, GraphicsUnit.Point);
+            using var fSub = new Font("Segoe UI", 8.75f * sc, FontStyle.Regular, GraphicsUnit.Point);
+            using var fmt = new StringFormat(StringFormatFlags.NoWrap) { Trimming = StringTrimming.EllipsisCharacter, LineAlignment = StringAlignment.Center };
+            bool two = _sub.Length > 0;
+            float lineH = h / 2f;
+            using (var b = new SolidBrush(Color.FromArgb(246, 246, 250)))
+                g.DrawString(_title, fTitle, b, new RectangleF(tx, two ? h * 0.13f : 0, tw, two ? lineH * 0.9f : h), fmt);
+            if (two) using (var b = new SolidBrush(Color.FromArgb(160, 160, 172)))
+                g.DrawString(_sub, fSub, b, new RectangleF(tx, h * 0.5f, tw, lineH * 0.78f), fmt);
+            return bmp;
+        }
+
+        private static void DrawIcon(Graphics g, RectangleF r, float sc)
+        {
+            float pw = 2.6f * sc;
+            switch (_kind)
+            {
+                case ToastKind.Busy:
+                    using (var track = new Pen(Color.FromArgb(40, 255, 255, 255), pw)) g.DrawEllipse(track, Inset(r, pw));
+                    using (var arcBrush = new LinearGradientBrush(r, AccentA, AccentB, 45f))
+                    using (var arc = new Pen(arcBrush, pw) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                        g.DrawArc(arc, Inset(r, pw), _spin, 100f);
+                    break;
+                case ToastKind.Success:
+                    using (var fill = new LinearGradientBrush(r, AccentA, AccentB, 45f)) g.FillEllipse(fill, r);
+                    using (var p = new Pen(Color.White, pw) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+                        g.DrawLines(p, new[] { Pt(r, .29f, .52f), Pt(r, .44f, .66f), Pt(r, .72f, .37f) });
+                    break;
+                case ToastKind.Warning:
+                    using (var fill = new SolidBrush(Color.FromArgb(255, 176, 32))) g.FillEllipse(fill, r);
+                    using (var p = new Pen(Color.FromArgb(28, 20, 4), pw) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                    { g.DrawLine(p, Pt(r, .5f, .27f), Pt(r, .5f, .56f)); g.FillEllipse(new SolidBrush(Color.FromArgb(28, 20, 4)), new RectangleF(r.X + r.Width * .5f - pw * .75f, r.Y + r.Height * .71f - pw * .75f, pw * 1.5f, pw * 1.5f)); }
+                    break;
+                default:
+                    using (var fill = new SolidBrush(Color.FromArgb(255, 77, 94))) g.FillEllipse(fill, r);
+                    using (var p = new Pen(Color.White, pw) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                    { g.DrawLine(p, Pt(r, .35f, .35f), Pt(r, .65f, .65f)); g.DrawLine(p, Pt(r, .65f, .35f), Pt(r, .35f, .65f)); }
+                    break;
+            }
+        }
+        private static PointF Pt(RectangleF r, float fx, float fy) => new(r.X + r.Width * fx, r.Y + r.Height * fy);
+        private static RectangleF Inset(RectangleF r, float d) => new(r.X + d / 2, r.Y + d / 2, r.Width - d, r.Height - d);
+        private static GraphicsPath Rounded(RectangleF r, float rad)
+        {
+            float d = rad * 2; var p = new GraphicsPath();
+            p.AddArc(r.X, r.Y, d, d, 180, 90); p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90); p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure(); return p;
+        }
+
+        // ── per-pixel-alpha window ──
+        private sealed class ToastForm : Form
+        {
+            public ToastForm() { FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; StartPosition = FormStartPosition.Manual; TopMost = true; }
+            protected override bool ShowWithoutActivation => true;
+            protected override CreateParams CreateParams
+            {   // LAYERED (per-pixel alpha) | NOACTIVATE | TOOLWINDOW | TRANSPARENT (click-through) | TOPMOST
+                get { var cp = base.CreateParams; cp.ExStyle |= 0x00080000 | 0x08000000 | 0x00000080 | 0x00000020 | 0x00000008; return cp; }
+            }
+        }
+
+        private static void Present(IntPtr hwnd, Bitmap bmp, int x, int y, byte alpha)
+        {
+            IntPtr screenDc = GetDC(IntPtr.Zero), memDc = CreateCompatibleDC(screenDc), hBmp = IntPtr.Zero, old = IntPtr.Zero;
+            try
+            {
+                hBmp = bmp.GetHbitmap(Color.FromArgb(0));
+                old = SelectObject(memDc, hBmp);
+                var size = new SIZE { cx = bmp.Width, cy = bmp.Height };
+                var src = new POINT(); var pos = new POINT { x = x, y = y };
+                var blend = new BLENDFUNCTION { BlendOp = 0, BlendFlags = 0, SourceConstantAlpha = alpha, AlphaFormat = 1 /*AC_SRC_ALPHA*/ };
+                UpdateLayeredWindow(hwnd, screenDc, ref pos, ref size, memDc, ref src, 0, ref blend, 2 /*ULW_ALPHA*/);
+                SetWindowPos(hwnd, new IntPtr(-1) /*HWND_TOPMOST*/, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 /*NOSIZE|NOMOVE|NOACTIVATE*/);
+            }
+            finally
+            {
+                if (old != IntPtr.Zero) SelectObject(memDc, old);
+                if (hBmp != IntPtr.Zero) DeleteObject(hBmp);
+                DeleteDC(memDc); ReleaseDC(IntPtr.Zero, screenDc);
+            }
+        }
+
+        [StructLayout(LayoutKind.Sequential)] private struct POINT { public int x, y; }
+        [StructLayout(LayoutKind.Sequential)] private struct SIZE { public int cx, cy; }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)] private struct BLENDFUNCTION { public byte BlendOp, BlendFlags, SourceConstantAlpha, AlphaFormat; }
+        [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int cmd);
+        [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+        [DllImport("user32.dll")] private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint affinity);
+        [DllImport("user32.dll")] private static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr hdcDst, ref POINT pptDst, ref SIZE psize, IntPtr hdcSrc, ref POINT pptSrc, int crKey, ref BLENDFUNCTION pblend, int dwFlags);
+        [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr hWnd);
+        [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+        [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleDC(IntPtr hDC);
+        [DllImport("gdi32.dll")] private static extern bool DeleteDC(IntPtr hdc);
+        [DllImport("gdi32.dll")] private static extern IntPtr SelectObject(IntPtr hDC, IntPtr hObject);
+        [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr hObject);
     }
 }
