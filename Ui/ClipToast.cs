@@ -20,7 +20,7 @@ namespace SpartaClips
     internal static class ClipToast
     {
         // ── layout at 96 DPI (scaled per monitor) ──
-        private const int W = 344, H = 66, RADIUS = 16, MARGIN = 20, ICON = 34;
+        private const int W = 360, H = 70, RADIUS = 16, MARGIN = 20, ICON = 36;
         private const int ANIM_IN_MS = 190, ANIM_OUT_MS = 230, SLIDE = 12;
 
         private static ToastForm? _form;
@@ -99,13 +99,16 @@ namespace SpartaClips
             var bmp = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
             using var g = Graphics.FromImage(bmp);
             g.SmoothingMode = SmoothingMode.AntiAlias; g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;   // ClearType can't render onto a transparent bitmap
+            // ClearType (sub-pixel, the crisp text Windows uses everywhere). It needs OPAQUE pixels under the glyphs, so the
+            // card itself is fully opaque — only the rounded corners are transparent. before: greyscale AA on a 97%-alpha
+            // card read soft/"not HD" at 100% display scaling.
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
             g.Clear(Color.Transparent);
 
             var card = new RectangleF(0.5f, 0.5f, w - 1f, h - 1f);
             using (var path = Rounded(card, RADIUS * sc))
             {
-                using (var bg = new LinearGradientBrush(card, Color.FromArgb(248, 30, 30, 38), Color.FromArgb(248, 15, 15, 20), 90f)) g.FillPath(bg, path);
+                using (var bg = new LinearGradientBrush(card, Color.FromArgb(255, 30, 30, 38), Color.FromArgb(255, 15, 15, 20), 90f)) g.FillPath(bg, path);
                 // time-left bar along the bottom edge (clipped to the card's rounded shape)
                 if (life > 0)
                 {
@@ -122,8 +125,8 @@ namespace SpartaClips
             DrawIcon(g, new RectangleF(ix, iy, isz, isz), sc);
 
             float tx = ix + isz + 13 * sc, tw = w - tx - 14 * sc;
-            using var fTitle = new Font("Segoe UI Semibold", 10.5f * sc, FontStyle.Regular, GraphicsUnit.Point);
-            using var fSub = new Font("Segoe UI", 8.75f * sc, FontStyle.Regular, GraphicsUnit.Point);
+            using var fTitle = new Font("Segoe UI Semibold", 11.25f * sc, FontStyle.Regular, GraphicsUnit.Point);
+            using var fSub = new Font("Segoe UI", 9.25f * sc, FontStyle.Regular, GraphicsUnit.Point);
             using var fmt = new StringFormat(StringFormatFlags.NoWrap) { Trimming = StringTrimming.EllipsisCharacter, LineAlignment = StringAlignment.Center };
             bool two = _sub.Length > 0;
             float lineH = h / 2f;
