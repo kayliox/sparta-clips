@@ -355,10 +355,9 @@
     let src = { mode: "auto", hwnd: "", title: "" };
     const modeLabel = () => src.mode === "display" ? "Desktop"
       : src.mode === "window" ? ((src.title || "Window").length > 20 ? src.title.slice(0, 19) + "…" : (src.title || "Window")) : "Auto";
-    function syncUi() {
+    function syncUi() {   // the button's TEXT is the live "Capturing <app>" status (pollCaptureTarget); this only tracks the mode
       if (lbl) lbl.textContent = modeLabel();
-      if (btn) { btn.classList.toggle("src-active", src.mode !== "auto");
-        btn.title = "Capture source — " + (src.mode === "window" ? "Window: " + src.title : src.mode === "display" ? "Desktop" : "Automatic"); }
+      if (btn) btn.classList.toggle("src-active", src.mode !== "auto");
       $$("#srcPop .src-mode").forEach(m => m.classList.toggle("active", m.dataset.src === src.mode));
     }
     function apply(mode, hwnd, title, proc) {
@@ -386,7 +385,7 @@
     syncPinnedFromEngine = (pinApp) => { if (pinApp && src.mode === "auto") { src = { mode: "window", hwnd: "", title: pinApp }; syncUi(); } };
     openSourcePicker = (from) => { if (pop && !pop.hidden && anchor === from) close(); else if (pop) open(from, true); };
     function scanWindows() { grid.innerHTML = '<div class="src-empty">Scanning open windows…</div>'; clipsNative.requestCaptureWindows(); }
-    if (btn && pop) btn.addEventListener("click", () => pop.hidden ? open(btn) : close());
+    if (btn && pop) btn.addEventListener("click", () => pop.hidden ? open(btn, true) : close());   // straight to the window grid
     $$("#srcPop .src-mode").forEach(m => m.addEventListener("click", () => {
       const mode = m.dataset.src;
       if (mode === "window") { wrap.hidden = false; scanWindows(); return; }   // pinning happens by picking from the grid
@@ -488,11 +487,9 @@
   // ── "Capturing <app>" status in the gallery bar — shows what the recorder is ACTUALLY capturing, and warns when it
   //    isn't the focused window (the replay buffer only re-targets the foreground window when a new segment starts). ──
   let _capTarget = null, _capTargetBusy = false;
-  document.addEventListener("click", (e) => { const el = e.target.closest && e.target.closest("#galTarget"); if (el && openSourcePicker) openSourcePicker(el); });
-  document.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && document.activeElement && document.activeElement.id === "galTarget" && openSourcePicker) { e.preventDefault(); openSourcePicker(document.activeElement); } });
   function captureTargetHtml() {
     const t = _capTarget;
-    if (!t || t.state === "idle") return `<span class="gal-target-dot off"></span><span class="gal-target-txt">Not capturing — instant replay is off</span>`;
+    if (!t || t.state === "idle") return `<span class="gal-target-dot off"></span><span class="gal-target-txt" title="Instant replay is off — click to choose what it records">Replay off</span>`;
     const verb = t.state === "recording" ? "Recording" : "Capturing";
     let what, tip;
     if (t.kind === "dual") { what = "<b>both screens</b>"; tip = "Dual-screen capture"; }
@@ -514,7 +511,7 @@
   }
   async function pollCaptureTarget() {
     if (_capTargetBusy || document.hidden) return;
-    const el = $("#galTarget"); if (!el) return;   // only while the gallery bar is on screen
+    const el = $("#tbSource"); if (!el) return;   // the title-bar capture button (every screen) — before: a gallery-only copy
     _capTargetBusy = true;
     try {
       const raw = await clipsNative.getCaptureTarget(); if (!raw) return;
@@ -1064,13 +1061,14 @@
   const infoMem = {};
   // Escape a clip name for use inside a [data-name="…"] attribute selector (names can contain quotes/brackets).
   function escSel(n) { return (window.CSS && CSS.escape) ? CSS.escape(n) : String(n).replace(/["\\]/g, "\\$&"); }
-  // Snap a probed avg framerate to the nearest standard rate for DISPLAY only (a "120fps" VFR capture averages
-  // ~120.x → would show 121). Encoding decisions still use the raw value. Falls back to a plain round if none is close.
+  // Snap a probed avg framerate to the NEAREST standard rate for DISPLAY only. Window capture is variable-rate, so a
+  // 25 fps game averages 26-28 and a "120" capture ~120.x — before (±2% window) cards showed "27 FPS". Encoding
+  // decisions still use the raw value. Falls back to a plain round when nothing is within 12%.
   function snapFps(fps) {
     const n = fps || 0; if (!n) return 0;
-    for (const s of [24, 25, 30, 48, 50, 60, 72, 90, 100, 120, 144, 165, 240, 360])
-      if (Math.abs(n - s) <= Math.max(1.5, s * 0.02)) return s;
-    return Math.round(n);
+    let best = 0, bd = Infinity;
+    for (const s of [24, 25, 30, 48, 50, 60, 72, 90, 100, 120, 144, 165, 240, 360]) { const d = Math.abs(n - s); if (d < bd) { bd = d; best = s; } }
+    return bd <= best * 0.12 ? best : Math.round(n);
   }
   function techHTML(info) {
     if (!info) return "";
@@ -1154,16 +1152,34 @@
     if (m) return { game: m[1].replace(/_/g, " ").trim(), date: new Date(+m[4], +m[3] - 1, +m[2], +m[5], +m[6]) };
     return { game: "", date: null };
   }
+  // What kind of clip a file is, from the suffix C# appends — shown on cards instead of repeating the game name.
+  function clipKind(name) {
+    const n = String(name || "");
+    if (/_replay(?:_\d+)?\.[^.]+$/i.test(n)) return "Replay";
+    if (/_(?:clip|combined)(?:_\d+)?\.[^.]+$/i.test(n)) return "Edited";
+    if (/_recovered/i.test(n)) return "Recovered";
+    return parseClip(n).game ? "Recording" : "";
+  }
+  // "Transformers Armada · Replay · 17:03" (date added when not today) — the editor title; the raw file name is
+  // what Rename edits.
+  function clipTitle(name) {
+    const p = parseClip(name);
+    if (!p.game) return String(name || "").replace(/\.[^.]+$/, "").replace(/_/g, " ");
+    const d = p.date, today = d && d.toDateString() === new Date().toDateString();
+    const when = d ? (today ? "" : d.toLocaleDateString([], { day: "numeric", month: "short" }) + " ") + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+    return [p.game, clipKind(name), when].filter(Boolean).join("  ·  ");
+  }
   function clipRel(ms) { const s = (Date.now() - ms) / 1000; if (s < 60) return "Now"; if (s < 3600) return Math.floor(s / 60) + "m ago"; if (s < 86400) return Math.floor(s / 3600) + "h ago"; return Math.floor(s / 86400) + "d ago"; }
   function clipDur(sec) { sec = Math.round(sec || 0); return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0"); }
   function clipBytes(b) { if (!b) return "0 MB"; const gb = b / 1073741824; return gb >= 1 ? gb.toFixed(1) + " GB" : Math.max(1, Math.round(b / 1048576)) + " MB"; }
   function clipUrl(name) { return "https://clips.local/" + encodeURIComponent(name); }
 
   const thumbMem = {};
+  const DISK_ICO = `<svg class="gal-storage-ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 14h18"/><circle cx="16.5" cy="17" r=".9" fill="currentColor"/></svg>`;
   function galCardHTML(c) {
     const p = parseClip(c.name);
     const dur = c.duration ? `<span class="gal-dur">${clipDur(c.duration)}</span>` : "";
-    const chip = p.game ? `<span class="gal-chip">${esc(p.game)}</span>` : "";
+    const kind = clipKind(c.name), chip = kind ? `<span class="gal-chip">${esc(kind)}</span>` : "";   // before: the game name again (it's already the title)
     const when = p.date ? clipRel(p.date.getTime()) : clipRel(c.modified);
     const sel = _galSel.has(c.name) ? " selected" : "";
     const t = thumbMem[c.name];
@@ -1225,7 +1241,7 @@
     scheduleShareRender();   // no overlay to hide — the in-page <video> sits under the share sheet's z-index naturally
   }
   function closeSharePopup() { const p = $("#sharePopup"); if (p) p.hidden = true; clearTimeout(_shareRenderT); try { clipsNative.shareDragDisarm(); } catch {} }
-  function setShareStatus(t) { const s = $("#shareStatus"); if (!s) return; s.hidden = !t; s.textContent = t || ""; }
+  function setShareStatus(t, tone) { const s = $("#shareStatus"); if (!s) return; s.hidden = !t; s.textContent = t || ""; s.classList.toggle("note", tone === "note"); }
   function renderShareSeg(sel, items, cur, onPick) {
     const host = $(sel); if (!host) return;
     host.innerHTML = items.map(it => `<button class="share-opt${it.v === cur ? " on" : ""}" data-v="${it.v}">${esc(it.label)}</button>`).join("");
@@ -1243,8 +1259,10 @@
         _shareReady = true;
         const mb = bytes ? fmtShareMB(bytes) : "";   // bytes from C# -> MB (fmtMB takes MB, not bytes)
         setShareDrag("ready", "Drag me into Discord" + (mb ? " · " + mb : ""));
-        setShareStatus(bytes && bytes > 500 * 1024 * 1024 ? "≈ " + mb + " — larger than Discord's 500 MB Nitro limit"
-          : bytes && bytes > 10 * 1024 * 1024 ? "≈ " + mb + " — needs Discord Nitro (free uploads are limited to 10 MB)" : "");
+        // Red only when it can't be uploaded at all; a size the user picked on purpose (Nitro) is just a grey note.
+        if (bytes && bytes > 500 * 1024 * 1024) setShareStatus("≈ " + mb + " — too big for Discord, even with Nitro (500 MB). Pick a smaller size.");
+        else if (bytes && bytes > 10 * 1024 * 1024) setShareStatus("Uploads with Discord Nitro · free accounts are limited to 10 MB", "note");
+        else setShareStatus("");
         requestAnimationFrame(reportShareDragRect);
       }
       else { _shareReady = false; setShareDrag("err", "Couldn't prepare — try a smaller size"); }
@@ -1339,8 +1357,8 @@
          <button class="gal-btn" id="galCancelBtn">Cancel</button>`
       : `<button class="gal-btn" id="galSelectBtn" title="Select multiple clips to delete or rename">Select</button>`;
     const storage = capGB > 0
-      ? `<div class="gal-storage" title="Clip storage — ${usedGB.toFixed(1)} of ${capGB} GB used"><div class="gal-meter${pct >= 85 ? " full" : ""}"><span style="width:${pct}%"></span></div><span class="gal-meter-txt">${usedGB.toFixed(1)} / ${capGB} GB</span></div>`
-      : `<div class="gal-storage"><span class="gal-meter-txt">${clipBytes(_clipsTotal)} used</span></div>`;
+      ? `<div class="gal-storage" title="Clip storage — ${usedGB.toFixed(1)} of ${capGB} GB used">${DISK_ICO}<div class="gal-meter${pct >= 85 ? " full" : ""}"><span style="width:${pct}%"></span></div><span class="gal-meter-txt">${usedGB.toFixed(1)} / ${capGB} GB</span></div>`
+      : `<div class="gal-storage" title="Space used by your clips">${DISK_ICO}<span class="gal-meter-txt">${clipBytes(_clipsTotal)} used</span></div>`;
     const header = `<div class="gal-head">
       <div class="gal-search">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
@@ -1357,7 +1375,6 @@
         <button class="gal-btn ico" id="galOpenBtn" title="Open clips folder"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg></button>
       </div>
       ${storage}
-      <div class="gal-target" id="galTarget" role="button" tabindex="0" aria-live="polite" title="Choose what instant replay records">${captureTargetHtml()}</div>
     </div>`;
     const saving = _replaySaving
       ? `<div class="gal-grid"><div class="gal-card gal-saving" aria-busy="true"><div class="gal-thumb"><span class="gal-spinner"></span></div><div class="gal-meta"><div class="gal-name">Saving replay…</div><div class="gal-sub"><span class="gal-when">just now</span></div></div></div></div>`
@@ -1969,9 +1986,11 @@
     { const b = $("#clipChatMute"); if (b) b.setAttribute("aria-pressed", String(_chatMuted)); }
     applyClipVols();
     const setTxt = (id, t) => { const e = $(id); if (e) e.textContent = t; };
-    const metaTxt = [p.game, clipBytes(c.size), clipDur(c.duration), p.date ? p.date.toLocaleString() : clipRel(c.modified)].filter(Boolean).join("   ·   ");
+    const metaTxt = [clipBytes(c.size), clipDur(c.duration), p.date ? p.date.toLocaleString() : clipRel(c.modified)].filter(Boolean).join("   ·   ");
     setTxt("#clipMeta", metaTxt);
+    { const ti = $("#clipTitle"); if (ti) { ti.textContent = clipTitle(name); ti.title = name; } }
     const ri = $("#clipRename"); if (ri) ri.value = name.replace(/\.[^.]+$/, "");
+    setRenaming(false);
     const pg = $("#clipPage"); if (pg) pg.hidden = false;
     document.body.classList.add("clip-open");
     renderClipTl(); updatePlayBtn();
@@ -2199,7 +2218,32 @@
     _clipKfs = Array.isArray(arr) ? arr.filter(x => typeof x === "number" && x >= 0).sort((a, b) => a - b) : [];
   };
   // (Playback clock is now driven by the <video> element's own events + a rAF loop — see ensureVideo / startClipClock.)
-  { const tl = $("#clipTl"); if (tl) tl.addEventListener("pointerdown", e => { if (e.target.closest(".clip-handle")) return; const dur = _clipDur || 0; seekClip(clipTlPos(e.clientX) * dur); }); }
+  // The trim timeline doubles as the scrub bar (before: a separate seek slider above it did the dragging). Press +
+  // drag scrubs with the same pause → coalesced-scrub → snap-to-keyframe → resume path the slider used.
+  { const tl = $("#clipTl"); if (tl) {
+      let wasPlaying = false, dragging = false;
+      const tAt = x => clipTlPos(x) * (_clipDur || 0);
+      tl.addEventListener("pointerdown", e => {
+        if (e.button !== 0 || e.target.closest(".clip-handle")) return;
+        dragging = true; _seekDrag = true; wasPlaying = _playing; _tlRect = tl.getBoundingClientRect();
+        const v = ensureVideo(); if (v && !v.paused) v.pause(); pauseClipAudio();
+        try { tl.setPointerCapture(e.pointerId); } catch {}
+        _t = tAt(e.clientX); scrubSeek(_t); updatePlayheads(); const c = $("#clipTimeCur"); if (c) c.textContent = clipDur(_t);
+      });
+      tl.addEventListener("pointermove", e => {
+        if (!dragging) return;
+        _t = tAt(e.clientX); scrubSeek(_t); updatePlayheads(); const c = $("#clipTimeCur"); if (c) c.textContent = clipDur(_t);
+      });
+      const finish = e => {
+        if (!dragging) return;
+        dragging = false; _seekDrag = false; _tlRect = null;
+        _t = snapKf(tAt(e.clientX)); _seekPending = -1; _atEnd = false;
+        if (_video) { try { _video.currentTime = _t; } catch {} if (wasPlaying) _video.play().catch(() => {}); }
+        updatePlayheads();
+      };
+      tl.addEventListener("pointerup", finish);
+      tl.addEventListener("pointercancel", finish);
+  } }
   { const b = $("#clipPlayPause"); if (b) b.addEventListener("click", togglePlay); }
   { const b = $("#clipStepBack"); if (b) b.addEventListener("click", () => stepClip(-1)); }   // ← keyframe (reuses the tested seek path)
   { const b = $("#clipStepFwd"); if (b) b.addEventListener("click", () => stepClip(1)); }
@@ -2286,11 +2330,22 @@
       m.addEventListener("click", close);
       document.addEventListener("pointerdown", e => { if (!m.hidden && !e.target.closest(".clip-more")) close(); });
     } }
-  { const b = $("#clipRenameBtn"); if (b) b.addEventListener("click", () => {
-      const n = curClipName(), ri = $("#clipRename"); if (!n || !ri) return;
-      const nn = (ri.value || "").trim(); if (!nn) return;
-      migrateClipState(n, nn + ".mp4");
-      clipsNative.renameClip(n, nn + ".mp4"); closeClipPage(); setTimeout(() => clipsNative.requestClips(), 250); showToast("Renamed", nn);
+  // The header shows a friendly title; Rename swaps in the file-name box (Enter saves, Esc cancels).
+  function setRenaming(on) {
+    const ti = $("#clipTitle"), ri = $("#clipRename"), b = $("#clipRenameBtn");
+    if (ti) ti.hidden = on; if (ri) ri.hidden = !on; if (b) b.textContent = on ? "Save" : "Rename";
+    if (on && ri) { const n = curClipName(); if (n) ri.value = n.replace(/\.[^.]+$/, ""); ri.focus(); ri.select(); }
+  }
+  function commitRename() {
+    const n = curClipName(), ri = $("#clipRename"); if (!n || !ri) return;
+    const nn = (ri.value || "").trim(); if (!nn || nn + ".mp4" === n) { setRenaming(false); return; }
+    migrateClipState(n, nn + ".mp4");
+    clipsNative.renameClip(n, nn + ".mp4"); closeClipPage(); setTimeout(() => clipsNative.requestClips(), 250); showToast("Renamed", nn);
+  }
+  { const b = $("#clipRenameBtn"); if (b) b.addEventListener("click", () => { const ri = $("#clipRename"); if (ri && !ri.hidden) commitRename(); else setRenaming(true); }); }
+  { const ri = $("#clipRename"); if (ri) ri.addEventListener("keydown", e => {
+      if (e.key === "Enter") { e.preventDefault(); commitRename(); }
+      else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setRenaming(false); }   // cancel the edit, not the editor
   }); }
   document.addEventListener("keydown", e => {
     if (e.key !== "Escape") return;

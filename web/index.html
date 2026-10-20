@@ -61,10 +61,9 @@
     <div class="tb-hud" id="tbHud">
       <button class="hud-rec" id="galRecBtn" title="Start / stop recording"><span class="gal-rec-dot"></span><span class="gal-rec-label">Record</span><span class="gal-rec-elapsed" id="galRecElapsed"></span></button>
       <button class="hud-rec armed" id="galSaveReplay" title="Save the last few seconds" hidden><span class="gal-rec-dot"></span><span>Save replay</span></button>
-      <!-- Capture-source picker: session-only override (Auto / Desktop / pinned window) — never touches saved settings. -->
+      <!-- Live "Capturing <app>" status + capture-source picker (Auto / Desktop / pin a window). Filled by pollCaptureTarget. -->
       <button class="hud-rec hud-src" id="tbSource" title="Capture source">
-        <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12.5" rx="2"/><line x1="8.5" y1="20" x2="15.5" y2="20"/></svg>
-        <span id="tbSourceLabel">Auto</span>
+        <span class="gal-target-dot off"></span><span class="gal-target-txt">Capture source</span>
       </button>
     </div>
     <div class="tb-spacer"></div>
@@ -123,7 +122,7 @@
                 <select id="capFps" class="sgdb-field" aria-label="Framerate"><option value="30">30 fps</option><option value="60">60 fps</option><option value="120">120 fps</option></select>
               </div>
               <div class="setting-row">
-                <div class="label"><strong>Encoder</strong><span><b>H.264</b> is the default — fast and plays in the editor and everywhere. <b>AV1</b> is the smallest and still previews in-app (a one-time FFmpeg download): <b>Hardware</b> is fast but needs a recent GPU (RTX 40 / Arc / RX 7000); <b>Software</b> runs on any PC's CPU — slower, great for short clips &amp; replays. <b>H.265 / HEVC</b> is small and now previews in-app — natively if Windows has the HEVC codec, otherwise via a quick H.264 conversion.</span></div>
+                <div class="label"><strong>Encoder</strong><span title="H.264 is the default — fast and plays in the editor and everywhere. AV1 is the smallest and still previews in-app (a one-time FFmpeg download): Hardware is fast but needs a recent GPU (RTX 40 / Arc / RX 7000); Software runs on any PC's CPU — slower, great for short clips &amp; replays. H.265 / HEVC is small and previews in-app — natively if Windows has the HEVC codec, otherwise via a quick H.264 conversion."><b>H.264</b> plays everywhere · <b>AV1</b> makes the smallest files (hardware needs RTX 40 / Arc / RX 7000) · <b>H.265</b> is small too. <span class="hint-more">ⓘ</span></span></div>
                 <select id="capEncoder" class="sgdb-field" aria-label="Video encoder"><option value="h264">H.264 (compatible — default)</option><option value="av1_hw">AV1 — hardware (smallest, fast)</option><option value="av1_sw">AV1 — software (smallest, any GPU)</option><option value="h265">H.265 / HEVC (smallest; in-app preview)</option></select>
               </div>
               <div class="setting-row hevc-rescan-row" id="hevcRescanRow" hidden>
@@ -190,7 +189,7 @@
                 <select id="capMicDevice" class="sgdb-field" aria-label="Microphone device"><option value="">System default</option></select>
               </div>
               <div class="setting-row">
-                <div class="label"><strong>Capture chat audio</strong><span>Record a <b>separate chat track</b> — e.g. your Discord voice chat (pick <b>App · Discord</b> as the source below) — so you can balance or mute it apart from game audio in the editor. Applies to clips recorded from now on.</span></div>
+                <div class="label"><strong>Capture chat audio</strong><span>Record your <b>Discord voice</b> (or another app / device) on its own track — mute or balance it in the editor.</span></div>
                 <button class="toggle" id="toggleCapChat" role="switch" aria-checked="false" aria-label="Capture chat audio"></button>
               </div>
               <div class="setting-row">
@@ -279,7 +278,7 @@
 
             <!-- App shell settings (standalone-only): arm policy, autostart, close behaviour, quit + logs. -->
             <div class="panel section collapsible">
-              <div class="section-head"><div><h3>Sparta Clips</h3><p>App startup and window behaviour.</p></div></div>
+              <div class="section-head"><div><h3>General</h3><p>App startup and window behaviour.</p></div></div>
               <div class="setting-row">
                 <div class="label"><strong>Instant-replay policy</strong><span><b>Always armed</b> keeps the background buffer rolling whenever Sparta Clips runs. <b>Only in a game</b> arms it when a game is detected in the foreground.</span></div>
                 <select id="setArmPolicy" class="sgdb-field" aria-label="Instant replay policy"><option value="always">Always armed</option><option value="game">Only in a game</option></select>
@@ -289,7 +288,7 @@
                 <button class="toggle" id="toggleAutostart" role="switch" aria-checked="false" aria-label="Start with Windows"></button>
               </div>
               <div class="setting-row">
-                <div class="label"><strong>Start elevated (anti-cheat games)</strong><span>Starts as administrator via a scheduled task, so the record / save-replay hotkeys keep working over <b>elevated</b> fullscreen games. Windows asks for approval once when you toggle this.</span></div>
+                <div class="label"><strong>Start elevated (anti-cheat games)</strong><span title="Starts as administrator via a scheduled task, so the record / save-replay hotkeys keep working over elevated fullscreen games. Windows asks for approval once when you toggle this.">Keeps the hotkeys working in games with anti-cheat. Windows asks for approval once. <span class="hint-more">ⓘ</span></span></div>
                 <button class="toggle" id="toggleAutostartElev" role="switch" aria-checked="false" aria-label="Start elevated"></button>
               </div>
               <div class="setting-row">
@@ -346,7 +345,7 @@
     <div class="clip-top">
       <button class="clip-back" id="clipBack" title="Back to Gallery" aria-label="Back to Gallery"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg></button>
       <div class="clip-head">
-        <div class="clip-name-row"><input id="clipRename" type="text" class="clip-name-input" maxlength="80" aria-label="Clip name"><button class="tiny-btn" id="clipRenameBtn">Rename</button></div>
+        <div class="clip-name-row"><h2 class="clip-title" id="clipTitle"></h2><input id="clipRename" type="text" class="clip-name-input" maxlength="80" aria-label="Clip file name" hidden><button class="tiny-btn" id="clipRenameBtn">Rename</button></div>
         <div class="clip-meta" id="clipMeta"></div>
       </div>
     </div>
@@ -365,10 +364,10 @@
             <button class="clip-tp-play" id="clipPlayPause" aria-label="Play / Pause">▶</button>
             <button class="clip-tp-step" id="clipStepFwd" title="Next keyframe (→)" aria-label="Next keyframe">⏭</button>
             <span class="clip-tp-time"><b id="clipTimeCur">0:00</b> / <span id="clipTimeDur">0:00</span></span>
+            <label class="clip-tp-vol" title="Video volume"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.5 8.5a5 5 0 0 1 0 7"></path></svg><input type="range" id="clipVidVol" min="0" max="100" step="5" value="100" aria-label="Video volume"><b class="clip-vol-val" id="clipVidVolVal">100%</b></label>
             <button class="clip-tp-mark" id="clipAddMark" title="Add a bookmark at the current spot">🔖 Mark</button>
           </div>
           <div class="clip-track-label">Video <span class="hint">· space play · ←/→ step · I/O in-out · M mark</span></div>
-          <input type="range" id="clipSeek" class="clip-seek" min="0" max="1000" step="1" value="0" aria-label="Seek position">
           <div class="clip-tl" id="clipTl">
             <div class="clip-tl-fill" id="clipTlFill"></div>
             <div class="clip-playhead" id="clipPlayhead"></div>
@@ -403,7 +402,6 @@
             <div class="clip-tl-row"><span id="clipMicTlIn">0:00</span><button class="gal-btn danger" id="clipMicDelBtn">Delete mic track</button><span id="clipMicTlOut">0:00</span></div>
           </div>
           <div class="clip-vol">
-            <div class="clip-vol-row"><span class="clip-vol-name">Video volume</span><b class="clip-vol-val" id="clipVidVolVal">100%</b><input type="range" id="clipVidVol" min="0" max="100" step="5" value="100" aria-label="Video track volume"><span class="clip-mute-gap" aria-hidden="true"></span></div>
             <div class="clip-vol-row" id="clipChatVolRow" hidden><span class="clip-vol-name">Chat volume</span><b class="clip-vol-val" id="clipChatVolVal">100%</b><input type="range" id="clipChatVol" min="0" max="200" step="5" value="100" aria-label="Chat track volume"><button class="clip-mute" id="clipChatMute" aria-pressed="false" title="Mute chat track" aria-label="Mute chat track"><svg class="ico-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.5 8.5a5 5 0 0 1 0 7"></path><path d="M18.5 5.5a9 9 0 0 1 0 13"></path></svg><svg class="ico-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg></button></div>
             <div class="clip-vol-row" id="clipMicVolRow" hidden><span class="clip-vol-name">Mic volume</span><b class="clip-vol-val" id="clipMicVolVal">100%</b><input type="range" id="clipMicVol" min="0" max="200" step="5" value="100" aria-label="Mic track volume"><button class="clip-mute" id="clipMicMute" aria-pressed="false" title="Mute mic track" aria-label="Mute mic track"><svg class="ico-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.5 8.5a5 5 0 0 1 0 7"></path><path d="M18.5 5.5a9 9 0 0 1 0 13"></path></svg><svg class="ico-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg></button></div>
           </div>
@@ -411,17 +409,17 @@
           <div class="clip-actions">
             <div class="clip-actions-left">
               <button class="gal-btn" id="clipPreview">Preview selection</button>
-              <button class="gal-btn" id="clipFillBtn" title="Fill or fit the video in its box"><span id="clipFillLabel">Fill player</span></button>
               <div class="clip-more">
                 <button class="gal-btn ico" id="clipMoreBtn" title="More actions" aria-label="More actions" aria-expanded="false"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button>
                 <div class="clip-more-menu" id="clipMoreMenu" hidden>
+                  <button id="clipAddSeg" title="Save the current selection as a segment; Create exports every saved segment">＋ Add segment</button>
+                  <button id="clipFillBtn" title="Fill or fit the video in its box"><span id="clipFillLabel">Fill player</span></button>
                   <button id="clipOpenBtn" title="Reveal this clip in Explorer">Open folder</button>
                   <button id="clipDeleteBtn" class="danger" title="Delete this clip">Delete clip</button>
                 </div>
               </div>
             </div>
             <div class="clip-actions-right">
-              <button class="gal-btn" id="clipAddSeg" title="Save the current selection as a segment; Create exports every saved segment">＋ Add segment</button>
               <button class="gal-btn" id="clipCombine" title="Merge all saved segments into one clip" hidden>Combine → 1</button>
               <button class="gal-btn" id="clipExportBtn" title="Export the selection to a file (MP4 or GIF)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:.35rem"><path d="M12 3v12M8 11l4 4 4-4M4 21h16"/></svg>Export</button>
               <button class="gal-btn share-btn" id="clipShareBtn" title="Share this clip to Discord (size tier + fps)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:.35rem"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg>Share</button>

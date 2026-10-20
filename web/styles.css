@@ -144,6 +144,10 @@ input[type=checkbox]{accent-color:var(--accent)}
 .hud-src:hover{color:var(--text);border-color:var(--line-2);filter:none;background:var(--surface-3)}
 .hud-src svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round}
 .hud-src.src-active{color:var(--accent);border-color:var(--accent-line);background:rgba(var(--accent-rgb),.12)}
+.hud-src{font-weight:500}
+.hud-src .gal-target-txt{max-width:260px;font-size:var(--text-xs);color:var(--text-2);line-height:1.4}   /* line-height: the ellipsis overflow clip was cutting off g/p descenders */   /* live "Capturing <app>" status */
+.hud-src .gal-target-txt b{color:var(--text)}
+.hint-more{color:var(--text-3);cursor:help}   /* ⓘ = the full description is in the tooltip */
 /* The popover: fixed, anchored under the button by JS; sits above everything incl. the titlebar (z 200). */
 .src-pop{position:fixed;z-index:400;width:380px;background:var(--surface-1);border:1px solid var(--line-2);
   border-radius:var(--r-lg);box-shadow:var(--sh-3);padding:.45rem;animation:fadeUp 140ms ease both;
@@ -481,7 +485,8 @@ body.app-idle .gal-rec-dot,body.app-idle .gal-armed .gal-rec-dot{animation-play-
 .gal-meter{width:72px;height:6px;border-radius:var(--r-pill);background:var(--surface-2);border:1px solid var(--line);overflow:hidden}
 .gal-meter span{display:block;height:100%;background:var(--ok);border-radius:var(--r-pill);transition:width var(--transition)}
 .gal-meter.full span{background:var(--amber)}
-.gal-meter-txt{font-family:var(--mono);font-size:var(--text-2xs);color:var(--text-3);white-space:nowrap;font-variant-numeric:tabular-nums}
+.gal-meter-txt{font-size:var(--text-xs);color:var(--text-2);white-space:nowrap;font-variant-numeric:tabular-nums}
+.gal-storage-ico{flex:none;color:var(--text-3)}
 /* ── Capture-target status ("Capturing PCSX2 · <title>") — fills the bar's spare width, truncates with an ellipsis ── */
 .gal-target{display:flex;align-items:center;justify-content:center;gap:.45rem;flex:1 1 180px;min-width:0;margin:0 .4rem;padding:.3rem .7rem;
   border-radius:var(--r-pill);border:1px solid transparent;cursor:pointer;transition:background var(--transition),border-color var(--transition)}
@@ -564,11 +569,13 @@ body.app-idle .gal-rec-dot,body.app-idle .gal-armed .gal-rec-dot{animation-play-
 .share-drag.ready .share-drag-txt{color:var(--accent)}
 .share-status{margin:.7rem 0 .1rem;font-size:var(--text-sm);color:var(--accent)}
 .share-status[hidden]{display:none}
+.share-status.note{color:var(--text-3)}   /* expected outcome (e.g. a Nitro-size share) — informational, not an alarm */
 .share-actions{display:flex;gap:.7rem;align-items:center;margin-top:1.35rem}
 .share-actions .action-btn{padding:.7rem 1.1rem;font-size:1rem}
 .share-actions .action-btn.primary{flex:1;justify-content:center}
-.share-quality{align-items:flex-start;gap:1.6rem;flex-wrap:wrap}
-.share-qcol{display:flex;align-items:center;gap:.8rem;flex:1;min-width:0}
+.share-quality{flex-direction:column;align-items:stretch;gap:.7rem}   /* Size row, then FPS row — side by side squeezed the sizes into 3 rows */
+.share-qcol{display:flex;align-items:center;gap:.8rem;min-width:0}
+.share-quality .share-opt{padding:.45rem .85rem}
 #shareCopy{background:var(--grad-primary);border-color:transparent;color:#fff;font-weight:700}
 #shareCopy:hover{background:var(--grad-primary);filter:brightness(1.07)}
 #shareCopy.busy{opacity:.55;pointer-events:none;background:var(--surface-3);color:var(--text-2);filter:none}
@@ -585,6 +592,8 @@ body.app-idle .gal-rec-dot,body.app-idle .gal-armed .gal-rec-dot{animation-play-
 .clip-back:hover{border-color:var(--accent-line);color:var(--accent);background:var(--surface-3)}
 .clip-head{min-width:0;flex:1}
 .clip-name-row{display:flex;align-items:center;gap:.55rem}
+.clip-title{flex:1;min-width:0;margin:0;font-size:1.15rem;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:.34rem 0}
+.clip-title[hidden],.clip-name-input[hidden]{display:none}
 .clip-name-input{flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-sm);color:var(--text);font-size:1.15rem;font-weight:600;padding:.34rem .7rem}
 .clip-name-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);background:var(--surface-3)}
 .clip-meta{font-size:var(--text-xs);color:var(--text-2);margin-top:.2rem}
@@ -644,6 +653,7 @@ body.app-idle .gal-rec-dot,body.app-idle .gal-armed .gal-rec-dot{animation-play-
 .clip-tl{position:relative;height:40px;border-radius:var(--r-sm);background:var(--surface-2);border:1px solid var(--line);cursor:pointer}
 .clip-tl-fill{position:absolute;top:0;bottom:0;background:var(--accent-soft);border-left:2px solid var(--accent);border-right:2px solid var(--accent)}
 .clip-playhead{position:absolute;top:0;bottom:0;width:2px;background:#fff;left:0;pointer-events:none;box-shadow:0 0 4px rgba(0,0,0,.8)}
+#clipPlayhead::before{content:"";position:absolute;top:-7px;left:-5px;width:12px;height:12px;border-radius:50%;background:#fff;box-shadow:0 0 0 3px rgba(255,59,78,.35),0 1px 4px rgba(0,0,0,.6)}   /* grab knob: the timeline is the scrub bar now */
 body.clip-dragging .clip-playhead{display:none}
 .clip-handle{position:absolute;top:-3px;bottom:-3px;width:14px;margin-left:-7px;border-radius:var(--r-sm);background:var(--accent);cursor:ew-resize;z-index:2}
 .clip-handle::after{content:"";position:absolute;left:6px;top:50%;width:2px;height:16px;margin-top:-8px;background:rgba(0,0,0,.45)}
@@ -670,6 +680,10 @@ body.clip-dragging .clip-playhead{display:none}
 .clip-tp-time{font-size:var(--text-sm);font-variant-numeric:tabular-nums;color:var(--text-2)}
 .clip-tp-time b{color:var(--text);font-weight:700}
 .clip-seek{display:block;width:100%;margin:.1rem 0 .25rem;accent-color:var(--accent);cursor:pointer}
+.clip-tp-vol{display:flex;align-items:center;gap:.45rem;margin-left:auto;color:var(--text-2);cursor:pointer}
+.clip-tp-vol input[type=range]{width:110px}
+.clip-tp-vol .clip-vol-val{min-width:3ch;text-align:right;font-size:var(--text-xs)}
+.clip-tp-vol + .clip-tp-mark{margin-left:.7rem}
 .clip-tp-mark{flex:none;margin-left:auto;display:inline-flex;align-items:center;gap:.25rem;background:var(--surface-2);border:1px solid var(--line-2);border-radius:var(--r-sm);color:var(--text);cursor:pointer;font-size:var(--text-xs);font-weight:600;padding:.3rem .6rem;transition:border-color var(--transition)}
 .clip-tp-mark:hover{border-color:var(--accent-line)}
 .clip-mark{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--amber);transform:translateX(-1px);cursor:grab;z-index:4;border-radius:2px;touch-action:none}

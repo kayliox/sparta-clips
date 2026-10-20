@@ -106,7 +106,7 @@ folder — they're never deleted.
 <details>
 <summary><b>My hotkey doesn't work in one particular game.</b></summary>
 
-Some games with anti-cheat run with extra permissions. In **Settings → Sparta Clips**, turn on
+Some games with anti-cheat run with extra permissions. In **Settings → General**, turn on
 **Start elevated** so the hotkeys work there too.
 </details>
 
