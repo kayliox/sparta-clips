@@ -47,7 +47,7 @@ namespace SpartaClips
         // output devices (loopback). Discord is always offered; the others only while running.
         public string ListChatDevices()
         {
-            var list = new System.Collections.Generic.List<object> { new { id = "app:Discord", name = "App · Discord (recommended — ignores volume sliders)" } };
+            var list = new System.Collections.Generic.List<object> { new { id = "app:Discord", name = "App · Discord (recommended)" } };
             foreach (var (proc, label) in new[] { ("DiscordPTB", "Discord PTB"), ("DiscordCanary", "Discord Canary"), ("TeamSpeak", "TeamSpeak"), ("ts3client_win64", "TeamSpeak 3"), ("mumble", "Mumble") })
                 try { var ps = System.Diagnostics.Process.GetProcessesByName(proc); bool on = ps.Length > 0; foreach (var p in ps) p.Dispose(); if (on) list.Add(new { id = "app:" + proc, name = "App · " + label }); } catch { }
             try { list.AddRange(JsonConvert.DeserializeObject<System.Collections.Generic.List<object>>(ListEndpoints(NAudio.CoreAudioApi.DataFlow.Render)) ?? new()); } catch { }

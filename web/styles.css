@@ -74,6 +74,7 @@ input,textarea,[contenteditable="true"]{user-select:text;-webkit-user-select:tex
 input::selection,textarea::selection{background:var(--accent-soft)}
 /* Form controls do NOT inherit the page font in Chromium — inputs were typing in Arial. */
 button,input,select,textarea{font-family:inherit}
+select{field-sizing:content}   /* every dropdown fits its SELECTED text — native sizing used the longest option ("Custom" sat in a box sized for the widest preset) */
 input,textarea{caret-color:var(--accent)}
 select option{background:var(--surface-2);color:var(--text)}
 select option:checked{background:var(--surface-3,#26262e);color:#fff}

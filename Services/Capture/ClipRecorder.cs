@@ -615,6 +615,19 @@ namespace SpartaClips
         private static IntPtr _capHwnd;
         private static string _capKind = "display";   // "window" | "display" | "dual"
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, string> _appNames = new();
+        // Display name for a window's program: the exe's product name ("pcsx2-qt" → "PCSX2"); without one (many games ship
+        // no version info, e.g. "TFTClient-Win64-Shipping") the window's own title ("TFT") when it's short; else the exe
+        // name with engine build suffixes stripped. before: the raw process name showed up in the status line.
+        private static string DisplayAppName(uint pid, IntPtr hwnd)
+        {
+            string n = FriendlyAppName(pid);
+            if (n.Length > 0 && !_noVersionInfo.ContainsKey(pid)) return n;
+            string t = hwnd != IntPtr.Zero ? WindowTitle(hwnd) : "";
+            if (t.Length > 0 && t.Length <= 40) return t;
+            return System.Text.RegularExpressions.Regex.Replace(n, @"[-_ ]?(Win64|Win32|x64|x86)?[-_ ]?(Shipping|Release|Retail)?$", "",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim('-', '_', ' ');
+        }
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, bool> _noVersionInfo = new();
         private static string FriendlyAppName(uint pid)
         {
             if (pid == 0) return "";
@@ -629,9 +642,9 @@ namespace SpartaClips
                         var vi = pr.MainModule?.FileVersionInfo;   // "pcsx2-qt" → "PCSX2"; throws for elevated/protected targets
                         string d = (vi?.ProductName ?? "").Trim();
                         if (d.Length == 0 || d.Length > 40) d = (vi?.FileDescription ?? "").Trim();
-                        if (d.Length > 0 && d.Length <= 40) n = d;
+                        if (d.Length > 0 && d.Length <= 40) n = d; else _noVersionInfo[id] = true;
                     }
-                    catch { }
+                    catch { _noVersionInfo[id] = true; }
                     return n;
                 }
                 catch { return ""; }
@@ -651,7 +664,7 @@ namespace SpartaClips
             if (kind == "window")
             {
                 if (h == IntPtr.Zero || !IsWindow(h)) gone = true;
-                else { title = WindowTitle(h); GetWindowThreadProcessId(h, out uint pid); app = FriendlyAppName(pid); }
+                else { title = WindowTitle(h); GetWindowThreadProcessId(h, out uint pid); app = DisplayAppName(pid, h); }
                 try
                 {
                     IntPtr fg = GetForegroundWindow();
@@ -659,7 +672,7 @@ namespace SpartaClips
                     GetWindowThreadProcessId(h, out uint cpid);
                     // Our own window being focused (the user is looking at this status) is not "elsewhere".
                     if (fg != IntPtr.Zero && fg != h && fpid != cpid && fpid != (uint)Environment.ProcessId)
-                    { elsewhere = true; focusApp = FriendlyAppName(fpid); if (focusApp.Length == 0) focusApp = WindowTitle(fg); }
+                    { elsewhere = true; focusApp = DisplayAppName(fpid, fg); }
                 }
                 catch { }
             }
@@ -1048,6 +1061,14 @@ namespace SpartaClips
                 // keep the just-stopped segment as the new prev so coverage continues, then roll a fresh current
                 TryDelete(_bufPrev); _bufPrev = cur; StartSegment();
                 if (outName != null && File.Exists(gameTmp)) await ClipFfmpeg.ReplaceAudioAsync(Path.Combine(ClipsDir, outName), gameTmp, alignEnd: true);   // ring ends where the clip ends
+                // The mic/chat rings hold replayLen seconds, but the clip can be SHORTER (follow-focus starts a fresh
+                // segment; a size change drops the previous one). Both end at the save point → keep only the tail that
+                // matches the video. before: a 21 s replay got a 60 s chat track, ~39 s out of sync.
+                if (outName != null)
+                {
+                    double vid = 0; try { vid = ClipLibrary.Mp4DurationSeconds(Path.Combine(ClipsDir, outName)); } catch { }
+                    if (vid > 0) { TrimWavToTail(micTmp, vid); TrimWavToTail(chatTmp, vid); }
+                }
                 if (outName != null && Av1Mode) { Notify?.Invoke("transcoding", "{}"); outName = await TranscodeReplayAv1(outName); }
                 if (outName != null)
                 {
@@ -1183,6 +1204,28 @@ namespace SpartaClips
             catch (Exception ex) { DiagLog.Line("CLIP", "compose err: " + ex.Message); if (created != null) { try { await created.DeleteAsync(); } catch { } } return null; }
         }
         private static void TryDelete(string? p) { try { if (!string.IsNullOrEmpty(p) && File.Exists(p)) File.Delete(p); } catch { } }
+        // Keep only the last `seconds` of a PCM WAV (in place). No-op when it's already that short or missing.
+        private static void TrimWavToTail(string path, double seconds)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
+            string tmp = path + ".trim";
+            try
+            {
+                using (var r = new NAudio.Wave.WaveFileReader(path))
+                {
+                    double extra = r.TotalTime.TotalSeconds - seconds;
+                    if (extra < 0.05) return;
+                    int block = r.WaveFormat.BlockAlign;
+                    long skip = (long)(extra * r.WaveFormat.AverageBytesPerSecond); skip -= skip % block;
+                    r.Position = skip;
+                    using var w = new NAudio.Wave.WaveFileWriter(tmp, r.WaveFormat);
+                    var buf = new byte[block * 4096]; int n;
+                    while ((n = r.Read(buf, 0, buf.Length)) > 0) w.Write(buf, 0, n);
+                }
+                File.Delete(path); File.Move(tmp, path);
+            }
+            catch (Exception ex) { DiagLog.Line("CLIP", "sidecar trim err: " + ex.Message); try { if (File.Exists(tmp)) File.Delete(tmp); } catch { } }
+        }
         private static void MoveSidecar(string tmp, string dest) { try { if (tmp.Length > 0 && File.Exists(tmp)) { if (File.Exists(dest)) File.Delete(dest); File.Move(tmp, dest); } } catch { } }
 
         private static string SafeName(string s)
