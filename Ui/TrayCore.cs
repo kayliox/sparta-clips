@@ -203,7 +203,11 @@ namespace SpartaClips
             var m = System.Text.RegularExpressions.Regex.Match(n, @"^(.*)_\d{2}\.\d{2}\.\d{4}\.\d{2}\.\d{2}");
             string game = (m.Success ? m.Groups[1].Value : n).Replace('_', ' ').Trim();
             bool replay = n.Contains("_replay", StringComparison.OrdinalIgnoreCase);
-            return replay ? (game.Length > 0 ? game + "  ·  " : "") + ClipRecorder.ReplayLenSeconds + " s" : game;
+            // The real clip length (a replay right after switching windows is shorter than the replay setting).
+            double secs = 0;
+            try { string? full = ClipLibrary.PathOf(JsonField(json, "name") ?? ""); if (full != null) secs = ClipLibrary.Mp4DurationSeconds(full); } catch { }
+            string len = secs >= 60 ? $"{(int)secs / 60}:{(int)secs % 60:00}" : secs > 0 ? Math.Max(1, (int)Math.Round(secs)) + " s" : ClipRecorder.ReplayLenSeconds + " s";
+            return (game.Length > 0 ? game + "  ·  " : "") + (replay || secs > 0 ? len : "");
         }
         // Rebind from the settings UI; persisted by the web layer into config.json (state). Returns whether the hook is active.
         public bool SetClipHotkeys(uint recMods, uint recVk, uint repMods, uint repVk, uint markMods, uint markVk)

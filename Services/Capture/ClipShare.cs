@@ -65,7 +65,12 @@ namespace SpartaClips
                     if (!(await ClipFfmpeg.ComposeAsync(src, mic.Length > 0 ? mic : null, chat.Length > 0 ? chat : null,
                             vin, vout, mix.vidVol,
                             mic.Length > 0, mix.micIn, mOut, mix.micOffset, mix.micVol,
-                            chat.Length > 0, mix.chatIn, cOut, mix.chatOffset, mix.chatVol, comp)
+                            chat.Length > 0, mix.chatIn, cOut, mix.chatOffset, mix.chatVol, comp,
+                            // Untrimmed → only the AUDIO needs mixing: copy the video untouched (original quality, fast).
+                            // Trimmed → frame-accurate cut needs a re-encode: near-lossless intermediate; the tier step
+                            // below compresses only if it doesn't fit. before: always x264 CRF 20 — a 125 MB clip
+                            // "shared at 500 MB" came out as 8.5 MB.
+                            trimmed ? "-c:v libx264 -preset veryfast -crf 14 -pix_fmt yuv420p" : "-c:v copy")
                         && File.Exists(comp)))
                     {
                         // FAIL the share — before: it silently fell through to the RAW clip, sharing the full

@@ -65,7 +65,11 @@ system tray (bottom-right, near the clock — click the **^** arrow if you don't
 
 1. **Play your game** like normal. Sparta Clips is already recording in the background (it only keeps the last
    30 seconds, so it doesn't fill your disk).
-2. Something cool happens? Press **Ctrl + Alt + F10**. You'll hear a little *ding* — your clip is saved.
+2. Something cool happens? Press **Ctrl + Alt + F10**. You'll hear a quick sound and see a small notification in
+   the top-left corner — your clip is saved. (The notification never shows up in your recordings.)
+
+   <img src="docs/screenshots/notification.png" width="460" alt="Saving replay… then Replay saved">
+
 3. Open Sparta Clips from the tray to **watch, trim, or share** it. To share: click **Share**, then **drag the big
    red box into your Discord chat**, or click **Copy for Discord** and paste with **Ctrl + V**.
 

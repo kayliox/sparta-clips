@@ -133,7 +133,7 @@ namespace SpartaClips
             double vidIn, double vidOut, double vidVol,
             bool micOn, double micIn, double micOut, double micOffset, double micVol,
             bool chatOn, double chatIn, double chatOut, double chatOffset, double chatVol,
-            string destPath)
+            string destPath, string? videoArgs = null)
         {
             string? ff = Ff; if (ff == null || !File.Exists(src)) return false;
             double dur = vidOut - vidIn; if (dur < 0.2) return false;
@@ -149,7 +149,7 @@ namespace SpartaClips
                 inputIdx = AppendTrack(sb, mixLabels, ref extraInputs, micOn, micWav, vidIn, vidOut, micIn, micOut, micOffset, micVol, inputIdx, "ma");
                 inputIdx = AppendTrack(sb, mixLabels, ref extraInputs, chatOn, chatWav, vidIn, vidOut, chatIn, chatOut, chatOffset, chatVol, inputIdx, "ca");
 
-                string venc = "-c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p";
+                string venc = videoArgs ?? "-c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p";   // share passes copy / high-quality args
                 string args;
                 if (mixLabels.Count > 1)
                 {
