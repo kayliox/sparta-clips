@@ -403,6 +403,7 @@ namespace SpartaClips
                             string mic = ClipRecorder.MicSidecar(src); if (!System.IO.File.Exists(mic)) mic = "";
                             string chat = ClipRecorder.ChatSidecar(src); if (!System.IO.File.Exists(chat)) chat = "";
                             if (!outPath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) outPath += ".mp4";
+                            using var _uw = ClipFfmpeg.UserWaiting();
                             ok = await ClipFfmpeg.ComposeAsync(src, mic.Length > 0 ? mic : null, chat.Length > 0 ? chat : null,
                                 o.vidIn, o.vidOut, o.vidVol, o.micOn, o.micIn, o.micOut, o.micOffset, o.micVol,
                                 o.chatOn, o.chatIn, o.chatOut, o.chatOffset, o.chatVol, outPath);

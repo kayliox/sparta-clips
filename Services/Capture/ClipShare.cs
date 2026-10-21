@@ -29,6 +29,7 @@ namespace SpartaClips
         public static async Task<string?> RenderAsync(string clipName, string outName, int tierMb, int fps,
             double vidIn, double vidOut, double durSec, Action<string, int>? progress = null, Mix? mix = null)
         {
+            using var _uw = ClipFfmpeg.UserWaiting();   // the user is watching a progress bar: run ffmpeg at normal priority
             mix ??= new Mix();
             string comp = "";
             await _renderGate.WaitAsync();   // serialize renders so overlapping tier/fps changes can't clobber the fixed temp files
@@ -107,7 +108,7 @@ namespace SpartaClips
                 else venc = "-c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p";   // Original tier, but fps forced a re-encode
                 string vf = filters.Count > 0 ? "-vf \"" + string.Join(",", filters) + "\" " : "";
 
-                string Args(string v) => $"-y -hide_banner -loglevel error -nostats -progress pipe:1 -i \"{source}\" {vf}{v} -c:a aac -b:a 160k -movflags +faststart \"{dst}\"";
+                string Args(string v) => $"-nostdin -y -hide_banner -loglevel error -nostats -progress pipe:1 -i \"{source}\" {vf}{v} -c:a aac -b:a 160k -movflags +faststart \"{dst}\"";
                 Action<double>? onFrac = progress == null ? null : f => progress("render", 50 + (int)(f * 49));
                 bool ok = await RunFfmpeg(ff, Args(venc), onFrac, outDur);
                 if (!ok && hw.Length > 0) { DiagLog.Line("SHARE", hw + " failed -> libx264"); hw = ""; ok = await RunFfmpeg(ff, Args(EncArgs("", kb)), onFrac, outDur); }

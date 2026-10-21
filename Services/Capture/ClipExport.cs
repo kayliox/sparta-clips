@@ -27,11 +27,11 @@ namespace SpartaClips
             try
             {
                 string filt = $"fps={fps},scale={width}:-1:flags=lanczos";
-                bool p1 = await Run(ff, $"-y -hide_banner -loglevel error -ss {F(vidIn)} -t {F(dur)} -i \"{src}\" -vf \"{filt},palettegen=stats_mode=diff\" \"{pal}\"");
+                bool p1 = await Run(ff, $"-nostdin -y -hide_banner -loglevel error -ss {F(vidIn)} -t {F(dur)} -i \"{src}\" -vf \"{filt},palettegen=stats_mode=diff\" \"{pal}\"");
                 if (!p1 || !File.Exists(pal)) return false;
                 // Render to TEMP then move — before: pass 2 wrote the user's chosen outPath directly, so a failed or
                 // killed encode left a corrupt partial .gif sitting at their destination (e.g. Desktop).
-                bool p2 = await Run(ff, $"-y -hide_banner -loglevel error -ss {F(vidIn)} -t {F(dur)} -i \"{src}\" -i \"{pal}\" -lavfi \"{filt}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3\" \"{tmp}\"");
+                bool p2 = await Run(ff, $"-nostdin -y -hide_banner -loglevel error -ss {F(vidIn)} -t {F(dur)} -i \"{src}\" -i \"{pal}\" -lavfi \"{filt}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3\" \"{tmp}\"");
                 if (!p2 || !File.Exists(tmp) || new FileInfo(tmp).Length == 0) return false;
                 if (File.Exists(outPath)) File.Delete(outPath);
                 File.Move(tmp, outPath);

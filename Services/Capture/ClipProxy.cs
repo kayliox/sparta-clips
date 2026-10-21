@@ -38,7 +38,7 @@ namespace SpartaClips
                     // cache path atomically — before: ffmpeg wrote dst directly, so a crash/kill mid-encode left a
                     // truncated file that the "Exists && Length > 0" cache check served as good FOREVER after.
                     string tmp = Path.Combine(Dir, "_x_" + DateTime.Now.Ticks + ".mp4");
-                    string args = $"-y -hide_banner -loglevel error -i \"{src}\" -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p -c:a copy -movflags +faststart \"{tmp}\"";
+                    string args = $"-nostdin -y -hide_banner -loglevel error -i \"{src}\" -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p -c:a copy -movflags +faststart \"{tmp}\"";
                     bool ok = await Run(ff, args);
                     if (!ok) { TryDel(tmp); ok = await Run(ff, args.Replace("-c:a copy", "-c:a aac -b:a 160k")); }   // fallback if audio can't be copied
                     if (ok && File.Exists(tmp) && new FileInfo(tmp).Length > 0 && ClipLibrary.Mp4DurationSeconds(tmp) > 0)

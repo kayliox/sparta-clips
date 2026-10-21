@@ -50,7 +50,7 @@ namespace SpartaClips
                 // representative frame nearby (avoids black/transition frames). Higher res + lanczos = crisper cards.
                 string ss = dur > 4 ? (dur * 0.4).ToString("0.###", CultureInfo.InvariantCulture) : (dur > 1.5 ? "1" : "0");
                 string tmp = Path.Combine(ThumbDir, "_t_" + DateTime.Now.Ticks + ".jpg");
-                string args(string hw) => $"-y -hide_banner -loglevel error {hw} -ss {ss} -i \"{srcPath}\" -frames:v 1 -vf \"thumbnail=40,scale=-2:480:flags=lanczos\" -q:v 3 \"{tmp}\"";
+                string args(string hw) => $"-nostdin -y -hide_banner -loglevel error {hw} -ss {ss} -i \"{srcPath}\" -frames:v 1 -vf \"thumbnail=40,scale=-2:480:flags=lanczos\" -q:v 3 \"{tmp}\"";
                 bool ok = await RunAsync(ff, args("-hwaccel auto"), tmp);
                 if (!ok) { TryDel(tmp); ok = await RunAsync(ff, args(""), tmp); }
                 if (ok) { try { if (File.Exists(thumb)) File.Delete(thumb); File.Move(tmp, thumb); return name; } catch { } }
@@ -119,7 +119,7 @@ namespace SpartaClips
                     static string N(double v) => v.ToString("0.000000", CultureInfo.InvariantCulture);
                     File.WriteAllText(list, "file '" + Q(prev) + "'\n" + (outp > 0 ? "outpoint " + N(outp) + "\n" : "") +
                         (spacing > 0 ? "duration " + N(spacing) + "\n" : "") + "file '" + Q(cur) + "'\n");
-                    ok = await RunAsync(ff, $"-y -hide_banner -loglevel error -f concat -safe 0 -i \"{list}\" -c copy -movflags +faststart \"{joined}\"", joined);
+                    ok = await RunAsync(ff, $"-nostdin -y -hide_banner -loglevel error -f concat -safe 0 -i \"{list}\" -c copy -movflags +faststart \"{joined}\"", joined);
                     if (ok)
                     {
                         double total = ClipLibrary.Mp4DurationSeconds(joined);
@@ -142,7 +142,7 @@ namespace SpartaClips
             double k = 0;
             foreach (var t in await KeyframesAsync(src)) { if (t <= start + 0.0005) k = t; else break; }
             string ss = (k + 0.0005).ToString("0.000000", CultureInfo.InvariantCulture);   // a hair past the keyframe → the seek lands ON it
-            return await RunAsync(ff, $"-y -hide_banner -loglevel error -ss {ss} -i \"{src}\" -c copy -avoid_negative_ts make_zero -movflags +faststart \"{dst}\"", dst);
+            return await RunAsync(ff, $"-nostdin -y -hide_banner -loglevel error -ss {ss} -i \"{src}\" -c copy -avoid_negative_ts make_zero -movflags +faststart \"{dst}\"", dst);
         }
 
         // Earlier segment (different size) → scaled + letterboxed into the current frame, its last `need` seconds joined in
@@ -177,7 +177,7 @@ namespace SpartaClips
                 "h264_qsv"   => $"-c:v h264_qsv -preset medium {rate}",
                 _            => $"-c:v libx264 -preset veryfast -crf 18",
             };
-            string args = $"-y -hide_banner -loglevel error -ss {F(start)} -i \"{prev}\" -i \"{cur}\" -filter_complex \"{fc}\" -map \"[v]\" -map \"[a]\" {venc} -pix_fmt yuv420p -c:a aac -b:a 192k -movflags +faststart \"{dst}\"";
+            string args = $"-nostdin -y -hide_banner -loglevel error -ss {F(start)} -i \"{prev}\" -i \"{cur}\" -filter_complex \"{fc}\" -map \"[v]\" -map \"[a]\" {venc} -pix_fmt yuv420p -c:a aac -b:a 192k -movflags +faststart \"{dst}\"";
             bool ok = await RunAsync(ff, args, dst);
             if (!ok && enc.Length > 0)   // a hardware encoder can refuse odd sizes → software fallback
                 ok = await RunAsync(ff, args.Replace(venc, "-c:v libx264 -preset veryfast -crf 18"), dst);
@@ -234,7 +234,7 @@ namespace SpartaClips
             string tmp = Path.Combine(TempDir, "trim_" + DateTime.Now.Ticks + ".mp4");
             try
             {
-                bool ok = await RunAsync(ff, $"-y -hide_banner -loglevel error -ss {F(start)} -i \"{src}\" -t {F(dur)} -c copy -movflags +faststart \"{tmp}\"", tmp);
+                bool ok = await RunAsync(ff, $"-nostdin -y -hide_banner -loglevel error -ss {F(start)} -i \"{src}\" -t {F(dur)} -c copy -movflags +faststart \"{tmp}\"", tmp);
                 return ok && Finalize(tmp, destPath);
             }
             catch (Exception ex) { DiagLog.Line("CLIP", "ff trim err: " + ex.Message); TryDel(tmp); return false; }
@@ -272,11 +272,11 @@ namespace SpartaClips
                     // A brickwall limiter catches the case where game audio + voice sum past 0 dBFS — otherwise the AAC
                     // buffer hard-clips (harsh highs, "compressed" sound). Transparent when the mix isn't hot.
                     sb.Append(string.Join("", mixLabels.ConvertAll(l => "[" + l + "]")) + $"amix=inputs={mixLabels.Count}:normalize=0,alimiter=limit=0.95[aout]");
-                    args = $"-y -hide_banner -loglevel error -ss {F(vidIn)} -i \"{src}\"{extraInputs} -t {F(dur)} -filter_complex \"{sb}\" -map 0:v:0 -map \"[aout]\" {venc} -c:a aac -b:a 192k -movflags +faststart \"{tmp}\"";
+                    args = $"-nostdin -y -hide_banner -loglevel error -ss {F(vidIn)} -i \"{src}\"{extraInputs} -t {F(dur)} -filter_complex \"{sb}\" -map 0:v:0 -map \"[aout]\" {venc} -c:a aac -b:a 192k -movflags +faststart \"{tmp}\"";
                 }
                 else   // no sidecars overlap → just the (volume-adjusted) clip audio
                 {
-                    args = $"-y -hide_banner -loglevel error -ss {F(vidIn)} -i \"{src}\" -t {F(dur)} -af volume={F(vidVol)} -map 0:v:0 -map 0:a:0? {venc} -c:a aac -b:a 192k -movflags +faststart \"{tmp}\"";
+                    args = $"-nostdin -y -hide_banner -loglevel error -ss {F(vidIn)} -i \"{src}\" -t {F(dur)} -af volume={F(vidVol)} -map 0:v:0 -map 0:a:0? {venc} -c:a aac -b:a 192k -movflags +faststart \"{tmp}\"";
                 }
                 bool ok = await RunAsync(ff, args, tmp);
                 return ok && Finalize(tmp, destPath);
@@ -381,7 +381,7 @@ namespace SpartaClips
                 // SOFTWARE decode (no -hwaccel) is intentional + measurably fastest here: HW HEVC decode adds a slow
                 // GPU→CPU readback for the CPU scale/encode, so it ran ~2× slower than multi-threaded software decode.
                 const string vargs = "-vf scale=-2:720 -c:v libx264 -preset veryfast -crf 23 -g 20 -keyint_min 20 -sc_threshold 0 -pix_fmt yuv420p -threads 0";
-                string A(string aud) => $"-y -hide_banner -loglevel error -i \"{srcPath}\" {vargs} {aud} -movflags +faststart \"{tmp}\"";
+                string A(string aud) => $"-nostdin -y -hide_banner -loglevel error -i \"{srcPath}\" {vargs} {aud} -movflags +faststart \"{tmp}\"";
                 bool ok = await RunAsync(ff, A("-c:a copy"), tmp);          // stream-copy the source's AAC audio (instant)
                 if (!ok) { TryDel(tmp); ok = await RunAsync(ff, A("-c:a aac -b:a 160k"), tmp); }   // robust path: re-encode audio if copy can't mux
                 if (ok) { try { if (File.Exists(proxy)) File.Delete(proxy); File.Move(tmp, proxy); DiagLog.Line("CLIP", "proxy built -> " + Path.GetFileName(proxy)); return proxy; } catch { } }
@@ -494,18 +494,18 @@ namespace SpartaClips
                 var parts = new System.Collections.Generic.List<string>();
                 if (hasHead)
                 {
-                    if (!await RunAsync(ff, $"-y -hide_banner -loglevel error -ss {F(start)} -i \"{src}\" -t {F(mStart - start)} {venc} -c:a aac -f mpegts \"{headTs}\"", headTs)) return false;
+                    if (!await RunAsync(ff, $"-nostdin -y -hide_banner -loglevel error -ss {F(start)} -i \"{src}\" -t {F(mStart - start)} {venc} -c:a aac -f mpegts \"{headTs}\"", headTs)) return false;
                     parts.Add(headTs);
                 }
-                if (!await RunAsync(ff, $"-y -hide_banner -loglevel error -ss {F(mStart)} -i \"{src}\" -t {F(mEnd - mStart)} -c copy -bsf:v {bsf} -f mpegts \"{midTs}\"", midTs)) return false;
+                if (!await RunAsync(ff, $"-nostdin -y -hide_banner -loglevel error -ss {F(mStart)} -i \"{src}\" -t {F(mEnd - mStart)} -c copy -bsf:v {bsf} -f mpegts \"{midTs}\"", midTs)) return false;
                 parts.Add(midTs);
                 if (hasTail)
                 {
-                    if (!await RunAsync(ff, $"-y -hide_banner -loglevel error -ss {F(mEnd)} -i \"{src}\" -t {F(end - mEnd)} {venc} -c:a aac -f mpegts \"{tailTs}\"", tailTs)) return false;
+                    if (!await RunAsync(ff, $"-nostdin -y -hide_banner -loglevel error -ss {F(mEnd)} -i \"{src}\" -t {F(end - mEnd)} {venc} -c:a aac -f mpegts \"{tailTs}\"", tailTs)) return false;
                     parts.Add(tailTs);
                 }
                 string concat = "concat:" + string.Join("|", parts);
-                if (!await RunAsync(ff, $"-y -hide_banner -loglevel error -i \"{concat}\" -c copy -movflags +faststart \"{tmp}\"", tmp)) return false;
+                if (!await RunAsync(ff, $"-nostdin -y -hide_banner -loglevel error -i \"{concat}\" -c copy -movflags +faststart \"{tmp}\"", tmp)) return false;
                 double got = ClipLibrary.Mp4DurationSeconds(tmp);   // safety net: reject a mangled-timestamp join (it happened with plain MP4 concat)
                 if (got < totalWanted - 1.0 || got > totalWanted + 1.0) { DiagLog.Line("CLIP", "smartcut dur off: " + F(got) + " vs " + F(totalWanted)); TryDel(tmp); return false; }
                 return Finalize(tmp, destPath);
@@ -529,11 +529,11 @@ namespace SpartaClips
                 {
                     if (!File.Exists(m)) return false;
                     string ts = Path.Combine(TempDir, "cc_" + stamp + "_" + (i++) + ".ts");
-                    if (!await RunAsync(ff, $"-y -hide_banner -loglevel error -i \"{m}\" -c copy -bsf:v h264_mp4toannexb -f mpegts \"{ts}\"", ts)) return false;
+                    if (!await RunAsync(ff, $"-nostdin -y -hide_banner -loglevel error -i \"{m}\" -c copy -bsf:v h264_mp4toannexb -f mpegts \"{ts}\"", ts)) return false;
                     tsParts.Add(ts);
                 }
                 string concat = "concat:" + string.Join("|", tsParts);
-                if (!await RunAsync(ff, $"-y -hide_banner -loglevel error -i \"{concat}\" -c copy -bsf:a aac_adtstoasc -movflags +faststart \"{tmp}\"", tmp)) return false;
+                if (!await RunAsync(ff, $"-nostdin -y -hide_banner -loglevel error -i \"{concat}\" -c copy -bsf:a aac_adtstoasc -movflags +faststart \"{tmp}\"", tmp)) return false;
                 return Finalize(tmp, destPath);
             }
             catch (Exception ex) { DiagLog.Line("CLIP", "concat err: " + ex.Message); TryDel(tmp); return false; }
@@ -587,7 +587,7 @@ namespace SpartaClips
                 string seek = "", delay = "";
                 if (s0 < -0.005) seek = $"-ss {F(-s0)} ";                                          // game track starts before the clip → drop its head
                 else if (s0 > 0.005) delay = $"adelay={(long)Math.Round(s0 * 1000)}:all=1,";       // starts later → push it right
-                string args = $"-y -hide_banner -loglevel error -i \"{mp4}\" {seek}-i \"{wav}\" -map 0:v:0 -map 1:a:0 -c:v copy " +
+                string args = $"-nostdin -y -hide_banner -loglevel error -i \"{mp4}\" {seek}-i \"{wav}\" -map 0:v:0 -map 1:a:0 -c:v copy " +
                               $"-af \"{delay}apad\" -c:a aac -b:a 192k -shortest -movflags +faststart \"{tmp}\"";
                 // The game ring restarts when follow-focus switches windows, so it can be shorter than a joined replay. Then
                 // the part BEFORE the switch keeps the clip's own recorded audio instead of going silent.
@@ -596,7 +596,7 @@ namespace SpartaClips
                 {
                     const string AF = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
                     string fc = $"[0:a]atrim=0:{F(gap)},asetpts=PTS-STARTPTS,{AF}[h];[1:a]{AF},asetpts=PTS-STARTPTS[t];[h][t]concat=n=2:v=0:a=1,apad[a]";   // head + game from s0
-                    args = $"-y -hide_banner -loglevel error -i \"{mp4}\" -i \"{wav}\" -filter_complex \"{fc}\" -map 0:v:0 -map \"[a]\" -c:v copy " +
+                    args = $"-nostdin -y -hide_banner -loglevel error -i \"{mp4}\" -i \"{wav}\" -filter_complex \"{fc}\" -map 0:v:0 -map \"[a]\" -c:v copy " +
                            $"-c:a aac -b:a 192k -shortest -movflags +faststart \"{tmp}\"";
                 }
                 if (!await RunAsync(ff, args, tmp)) return (false, 0);
@@ -644,7 +644,7 @@ namespace SpartaClips
         }
         private static async Task<short[]?> DecodeMonoAsync(string ff, string input, int sr)
         {
-            var psi = new ProcessStartInfo(ff, $"-hide_banner -loglevel error {input} -vn -ac 1 -ar {sr} -f s16le -")
+            var psi = new ProcessStartInfo(ff, $"-nostdin -hide_banner -loglevel error {input} -vn -ac 1 -ar {sr} -f s16le -")
             { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
             using var p = Process.Start(psi); if (p == null) return null;
             var errT = p.StandardError.ReadToEndAsync();
@@ -660,13 +660,21 @@ namespace SpartaClips
         private static void Center(double[] a) { double m = 0; foreach (var v in a) m += v; m /= Math.Max(1, a.Length); for (int i = 0; i < a.Length; i++) a[i] -= m; }
         private static double Dot(double[] a, double[] b) { double s = 0; for (int i = 0; i < a.Length; i++) s += a[i] * b[i]; return s; }
 
+        // "The user is waiting" scope (share prep, editor trim/save/export). Background work — saving a replay while a
+        // game runs, thumbnails, proxies — runs ffmpeg at BelowNormal so it never costs the game or the UI frames. But a
+        // job the user is WATCHING must not starve: under a CPU-heavy load (a compiler, an emulator) BelowNormal got
+        // ~0.3 s of CPU per minute and the share dialog sat at 10% forever. AsyncLocal → flows through every await.
+        private static readonly System.Threading.AsyncLocal<bool> _userWaiting = new();
+        public static IDisposable UserWaiting() { bool prev = _userWaiting.Value; _userWaiting.Value = true; return new WaitScope(prev); }
+        private sealed class WaitScope : IDisposable { private readonly bool _prev; public WaitScope(bool prev) => _prev = prev; public void Dispose() => _userWaiting.Value = _prev; }
+
         private static async Task<bool> RunAsync(string ff, string args, string dst)
         {
             try
             {
                 var psi = new ProcessStartInfo(ff, args) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
                 using var p = Process.Start(psi); if (p == null) return false;
-                try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }   // never starve the WebView2 renderer (UI stays smooth while transcoding)
+                if (!_userWaiting.Value) try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }   // background: never starve the game / WebView2 renderer
                 string err = await p.StandardError.ReadToEndAsync();
                 await p.WaitForExitAsync();
                 bool ok = p.ExitCode == 0 && File.Exists(dst) && new FileInfo(dst).Length > 0;

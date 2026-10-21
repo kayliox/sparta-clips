@@ -140,6 +140,7 @@ namespace SpartaClips
 
         public static async System.Threading.Tasks.Task<string?> TrimAsync(string name, double startSec, double endSec)
         {
+            using var _uw = ClipFfmpeg.UserWaiting();   // the user is watching a progress bar: run ffmpeg at normal priority
             var src = Resolve(name); if (src == null) return null;
             string outName = UniqueName(Path.GetFileNameWithoutExtension(name) + "_clip.mp4", ClipRecorder.EditedDir);
             string outPath = Path.Combine(ClipRecorder.EditedDir, outName);
@@ -189,6 +190,7 @@ namespace SpartaClips
         /// copy the middle) and, if that can't apply, fall back to a full re-encode. Returns the new name, or null.</summary>
         public static async System.Threading.Tasks.Task<string?> SmartCutAsync(string name, double startSec, double endSec)
         {
+            using var _uw = ClipFfmpeg.UserWaiting();   // the user is watching a progress bar: run ffmpeg at normal priority
             var src = Resolve(name); if (src == null) return null;
             string outName = UniqueName(Path.GetFileNameWithoutExtension(name) + "_clip.mp4", ClipRecorder.EditedDir);
             string outPath = Path.Combine(ClipRecorder.EditedDir, outName);
@@ -212,6 +214,7 @@ namespace SpartaClips
             bool micOn, double micIn, double micOut, double micOffset, double micVol,
             bool chatOn, double chatIn, double chatOut, double chatOffset, double chatVol)
         {
+            using var _uw = ClipFfmpeg.UserWaiting();   // the user is watching a progress bar: run ffmpeg at normal priority
             var src = Resolve(name); if (src == null) return null;
             string outName = UniqueName(Path.GetFileNameWithoutExtension(name) + "_clip.mp4", ClipRecorder.EditedDir);
             string outPath = Path.Combine(ClipRecorder.EditedDir, outName);
@@ -292,6 +295,7 @@ namespace SpartaClips
             double vidVol, bool micOn, double micIn, double micOut, double micOffset, double micVol,
             bool chatOn, double chatIn, double chatOut, double chatOffset, double chatVol, int kbps)
         {
+            using var _uw = ClipFfmpeg.UserWaiting();   // the user is watching a progress bar: run ffmpeg at normal priority
             var src = Resolve(name); if (src == null) return null;
             string outName = UniqueName(Path.GetFileNameWithoutExtension(name) + "_clip.mp4", ClipRecorder.EditedDir);
             string outPath = Path.Combine(ClipRecorder.EditedDir, outName);
@@ -308,6 +312,7 @@ namespace SpartaClips
             bool micOn, double micIn, double micOut, double micOffset, double micVol,
             bool chatOn, double chatIn, double chatOut, double chatOffset, double chatVol)
         {
+            using var _uw = ClipFfmpeg.UserWaiting();   // the user is watching a progress bar: run ffmpeg at normal priority
             var src = Resolve(name); if (src == null || ranges.Length == 0) return null;
             if (!await ClipFfmpeg.EnsureAsync()) return null;
             string outName = UniqueName(Path.GetFileNameWithoutExtension(name) + "_combined.mp4", ClipRecorder.EditedDir);

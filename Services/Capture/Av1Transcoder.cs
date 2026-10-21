@@ -35,7 +35,7 @@ namespace SpartaClips
             string? ff = FfmpegPath; if (ff == null) return "";
             try
             {
-                var psi = new ProcessStartInfo(ff, "-hide_banner -encoders")
+                var psi = new ProcessStartInfo(ff, "-nostdin -hide_banner -encoders")
                 { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
                 using var p = Process.Start(psi); if (p == null) return "";
                 _list = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
@@ -67,7 +67,7 @@ namespace SpartaClips
             string? ff = FfmpegPath; if (ff == null) return false;
             try
             {
-                var psi = new ProcessStartInfo(ff, $"-hide_banner -loglevel error -f lavfi -i testsrc2=s=640x360:r=30:d=0.3 -c:v {e} -b:v 2M -f null -")
+                var psi = new ProcessStartInfo(ff, $"-nostdin -hide_banner -loglevel error -f lavfi -i testsrc2=s=640x360:r=30:d=0.3 -c:v {e} -b:v 2M -f null -")
                 { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
                 using var p = Process.Start(psi); if (p == null) return false;
                 string err = p.StandardError.ReadToEnd();
@@ -112,7 +112,7 @@ namespace SpartaClips
             string? ff = FfmpegPath; if (ff == null || !File.Exists(src)) return false;
             string enc = PickEncoder(forceSw); if (enc.Length == 0) return false;
             string common = "-map 0:v:0 -map 0:a:0? -pix_fmt yuv420p -c:a copy -movflags +faststart";
-            string Cmd(string e, bool f) => $"-y -hide_banner -loglevel error -i \"{src}\" {EncArgs(e, kbps, f)} {common} \"{dst}\"";
+            string Cmd(string e, bool f) => $"-nostdin -y -hide_banner -loglevel error -i \"{src}\" {EncArgs(e, kbps, f)} {common} \"{dst}\"";
             if (await RunAsync(ff, Cmd(enc, fast))) return true;
             if (enc != "libsvtav1" && _list.Contains("libsvtav1")) { _hardware = false; DiagLog.Line("CLIP", "av1 hw failed → libsvtav1"); if (await RunAsync(ff, Cmd("libsvtav1", fast))) return true; enc = "libsvtav1"; }
             if (fast) { DiagLog.Line("CLIP", "av1 fast retry → standard preset"); return await RunAsync(ff, Cmd(enc, false)); }   // an unsupported fast-param must never silently drop AV1
@@ -173,11 +173,11 @@ namespace SpartaClips
             {
                 // Brickwall-limit the summed mix so game audio + voice past 0 dBFS don't hard-clip (see ClipFfmpeg note).
                 sb.Append(string.Join("", mixLabels.ConvertAll(l => "[" + l + "]")) + $"amix=inputs={mixLabels.Count}:normalize=0,alimiter=limit=0.95[aout]");
-                args = $"-y -hide_banner -loglevel error -ss {F(vidIn)} -i \"{src}\"{extraInputs} -filter_complex \"{sb}\" -map 0:v:0 -map \"[aout]\" -c:a aac -b:a 192k {tail}";
+                args = $"-nostdin -y -hide_banner -loglevel error -ss {F(vidIn)} -i \"{src}\"{extraInputs} -filter_complex \"{sb}\" -map 0:v:0 -map \"[aout]\" -c:a aac -b:a 192k {tail}";
             }
             else
             {
-                args = $"-y -hide_banner -loglevel error -ss {F(vidIn)} -i \"{src}\" -af volume={F(vidVol)} -map 0:v:0 -map 0:a:0? -c:a aac -b:a 192k {tail}";
+                args = $"-nostdin -y -hide_banner -loglevel error -ss {F(vidIn)} -i \"{src}\" -af volume={F(vidVol)} -map 0:v:0 -map 0:a:0? -c:a aac -b:a 192k {tail}";
             }
 
             if (await RunAsync(ff, args)) return true;
