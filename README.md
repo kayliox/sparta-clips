@@ -5,7 +5,7 @@
 # Sparta Clips
 
 **Save your best gaming moments with one key press.**<br>
-A free, lightweight clip recorder for Windows that sits quietly in your tray — then lets you trim
+A free, lightweight clip recorder for Windows that sits quietly in your tray & then lets you trim
 your clip and drop it straight into Discord.
 
 <br>
@@ -37,7 +37,7 @@ your clip and drop it straight into Discord.
 |---|---|
 | ⏪ **Instant replay** | Something awesome just happened? Press **Ctrl + Alt + F10** and the last 30 seconds are saved. No need to be recording beforehand. |
 | 🎬 **Record anything** | Press **Ctrl + Alt + F9** to start and stop a full recording. |
-| 🔊 **Sound that just works** | Records your game's audio at full volume — even if your headset software turns it down — plus your mic and Discord voice on their own tracks if you want them. |
+| 🔊 **Sound that just works** | Records your game's audio at full volume, even if your headset software turns it down, plus your mic and Discord voice on their own tracks if you want them. |
 | ✂️ **Easy editing** | Trim the boring bits, mute a track, mark the highlights. No video skills needed. |
 | 💬 **One-drag Discord sharing** | Pick a size (10 MB free, up to 500 MB with Nitro), then drag the clip straight into a Discord chat. Smaller sizes are automatically optimised so they still look sharp. |
 | 🪶 **Featherweight** | Lives in the system tray with no window open, so your games keep their frame rate. |
@@ -66,7 +66,7 @@ system tray (bottom-right, near the clock — click the **^** arrow if you don't
 1. **Play your game** like normal. Sparta Clips is already recording in the background (it only keeps the last
    30 seconds, so it doesn't fill your disk).
 2. Something cool happens? Press **Ctrl + Alt + F10**. You'll hear a quick sound and see a small notification in
-   the top-left corner — your clip is saved. (The notification never shows up in your recordings.)
+   the top-left corner, your clip is saved. (The notification never shows up in your recordings.)
 
    <img src="docs/screenshots/notification.png" width="460" alt="Saving replay… then Replay saved">
 
@@ -96,7 +96,7 @@ isn't even running while it sits in the tray. Most people won't notice it at all
 <details>
 <summary><b>How do I update?</b></summary>
 
-Download and run the installer again — it updates in place and keeps your clips and settings.
+Download and run the installer again, it updates in place and keeps your clips and settings.
 The download button always gives you the newest version.
 </details>
 
@@ -104,7 +104,7 @@ The download button always gives you the newest version.
 <summary><b>How do I uninstall?</b></summary>
 
 Windows **Settings → Apps → Installed apps → Sparta Clips → Uninstall**. Your clips stay in your Videos
-folder — they're never deleted.
+folder. They are never deleted.
 </details>
 
 <details>
