@@ -108,7 +108,7 @@ if (haveFf)
     string prev = Path.Combine(tmp, "h_prev.mp4"), cur = Path.Combine(tmp, "h_cur.mp4"), dst = Path.Combine(tmp, "h_replay.mp4"), png = Path.Combine(tmp, "h.png");
     Ffmpeg($"-f lavfi -i color=c=green:s=1920x1080:r=30:d=30 -f lavfi -i sine=f=440:r=48000:d=30 -ac 2 -c:v libx264 -preset ultrafast -c:a aac -shortest \"{prev}\"");
     Ffmpeg($"-f lavfi -i color=c=blue:s=3440x1440:r=30:d=10 -f lavfi -i sine=f=880:r=48000:d=10 -ac 2 -c:v libx264 -preset ultrafast -c:a aac -shortest \"{cur}\"");
-    bool joined = ((Task<bool>)Call(ffm, "ConcatLastSecondsAsync", prev, cur, 30, dst)).GetAwaiter().GetResult();
+    bool joined = ((Task<bool>)Call(ffm, "ConcatLastSecondsAsync", prev, cur, 30, dst, 0.0)).GetAwaiter().GetResult();
     double len = joined ? (double)Call(T("ClipLibrary"), "Mp4DurationSeconds", dst) : 0;
     Ffmpeg($"-ss 5 -i \"{dst}\" -frames:v 1 \"{png}\"");
     bool bars = false; int width = 0;
@@ -116,6 +116,28 @@ if (haveFf)
     Check("H. window-switch replay joined (full length, letterboxed)", joined && Math.Abs(len - 30) < 0.6 && width == 3440 && bars, $"joined={joined} length={len:F1}s width={width} letterboxed={bars}");
 }
 else Skip("H. window-switch replay joined", "no ffmpeg");
+
+// I — same-size replay join keeps the REAL gap between segments (recorder restart ~0.4 s): without it every second before
+// the join played early against the continuous game audio. prev started 20.5 s before cur but holds only 20 s of video.
+if (haveFf)
+{
+    string prev = Path.Combine(tmp, "i_prev.mp4"), cur = Path.Combine(tmp, "i_cur.mp4"), dst = Path.Combine(tmp, "i_replay.mp4");
+    Ffmpeg($"-f lavfi -i color=c=green:s=1280x720:r=30:d=20 -f lavfi -i sine=f=440:r=48000:d=20 -ac 2 -c:v libx264 -preset ultrafast -g 15 -c:a aac -shortest \"{prev}\"");
+    Ffmpeg($"-f lavfi -i color=c=blue:s=1280x720:r=30:d=10 -f lavfi -i sine=f=880:r=48000:d=10 -ac 2 -c:v libx264 -preset ultrafast -g 15 -c:a aac -shortest \"{cur}\"");
+    bool joined = ((Task<bool>)Call(ffm, "ConcatLastSecondsAsync", prev, cur, 25, dst, 20.5)).GetAwaiter().GetResult();
+    double gap = 0;
+    if (joined)
+    {
+        var pr = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Path.Combine(Path.GetDirectoryName(ff)!, "ffprobe.exe"),
+            $"-v error -select_streams v -show_entries packet=pts_time -of csv=p=0 \"{dst}\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true });
+        var pts = pr.StandardOutput.ReadToEnd().Split((char)10).Select(l => double.TryParse(l.Trim().TrimEnd(','), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : double.NaN)
+            .Where(v => !double.IsNaN(v)).OrderBy(v => v).ToList();
+        pr.WaitForExit();
+        for (int i = 1; i < pts.Count; i++) gap = Math.Max(gap, pts[i] - pts[i - 1]);
+    }
+    Check("I. replay join keeps the real segment gap", joined && Math.Abs(gap - (0.5 + 1 / 30.0)) < 0.06, $"joined={joined} largest frame gap={gap * 1000:F0} ms (want ~533)");
+}
+else Skip("I. replay join keeps the real segment gap", "no ffmpeg");
 
 // E — share resolution ladder for a 60 s 3440x1440 @ 26 fps clip
 int H(int tierMb) { double vbps = (tierMb * 8.0 * 1048576 * 0.95 - 160_000 * 60) / 60; return (int)Call(share, "ShareHeight", vbps, 3440, 1440, 26.0); }

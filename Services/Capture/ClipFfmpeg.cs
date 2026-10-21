@@ -68,7 +68,11 @@ namespace SpartaClips
         // ── Instant replay: concat the buffer's prev-tail + current and keep the last n seconds → destPath, all by
         // STREAM COPY (no re-encode → exact capture quality, instant, can never produce a broken/garbage clip).
         // The cut is keyframe-aligned (the start lands on the keyframe at/just-before the mark, like OBS replays). ──
-        public static async Task<bool> ConcatLastSecondsAsync(string prev, string cur, int n, string destPath)
+        // prevSpan = REAL time from prev's start to cur's start (0 = unknown). Stopping one recorder and starting the next
+        // takes ~0.4 s, so segments have a gap; butting them together dropped it from the video while the continuous game
+        // audio kept it → everything before a join (every save AND every 2-min rotation) played ~0.4 s out of sync
+        // (measured −418 ms). The gap is kept: the last frame holds for it, the sound stays in sync.
+        public static async Task<bool> ConcatLastSecondsAsync(string prev, string cur, int n, string destPath, double prevSpan = 0)
         {
             string? ff = Ff; if (ff == null || !File.Exists(cur)) return false;
             double curDur = ClipLibrary.Mp4DurationSeconds(cur);
@@ -88,7 +92,7 @@ namespace SpartaClips
                     if ((a.width != b.width || a.height != b.height) && b.width > 0 && b.height > 0)
                     {
                         DiagLog.Line("CLIP", $"replay: segment size changed ({a.width}x{a.height} -> {b.width}x{b.height}) — fitting the earlier footage and joining");
-                        bool joinedOk = await JoinResizedAsync(ff, prev, cur, n - curDur, curDur, b.width, b.height, tmp);
+                        bool joinedOk = await JoinResizedAsync(ff, prev, cur, n - curDur, curDur, b.width, b.height, tmp, prevSpan);
                         if (joinedOk) return Finalize(tmp, destPath);
                         DiagLog.Line("CLIP", "replay: fit-and-join failed — using the current segment only");
                         prev = "";
@@ -97,7 +101,7 @@ namespace SpartaClips
                 if (curDur >= n || string.IsNullOrEmpty(prev) || !File.Exists(prev))
                 {
                     double start = Math.Max(0, curDur - n);
-                    ok = await RunAsync(ff, $"-y -hide_banner -loglevel error -ss {F(start)} -i \"{cur}\" -c copy -movflags +faststart \"{tmp}\"", tmp);
+                    ok = await CutCopyAtKeyframeAsync(ff, cur, start, tmp);
                 }
                 else
                 {
@@ -106,13 +110,21 @@ namespace SpartaClips
                     joined = Path.Combine(TempDir, "join_" + DateTime.Now.Ticks + ".mp4");
                     // Concat-demuxer quoting: a ' inside a single-quoted entry must become '\'' (think C:\Users\O'Brien\…\Temp)
                     static string Q(string p2) => p2.Replace("\\", "/").Replace("'", "'\\''");
-                    File.WriteAllText(list, "file '" + Q(prev) + "'\nfile '" + Q(cur) + "'\n");
+                    // outpoint = where BOTH of prev's streams still exist: a segment whose window closed keeps recording
+                    // audio with no video (seconds of it) — joined as-is, that left a gap/jump in the audio timeline.
+                    var (pv, pa) = await StreamDurationsAsync(prev);
+                    double outp = pv > 0 && pa > 0 ? Math.Min(pv, pa) : 0;
+                    if (prevSpan > 0 && outp > 0 && prevSpan < outp) outp = prevSpan;
+                    double spacing = prevSpan > 0 ? Math.Max(prevSpan, outp) : 0;   // cur starts where it really started
+                    static string N(double v) => v.ToString("0.000000", CultureInfo.InvariantCulture);
+                    File.WriteAllText(list, "file '" + Q(prev) + "'\n" + (outp > 0 ? "outpoint " + N(outp) + "\n" : "") +
+                        (spacing > 0 ? "duration " + N(spacing) + "\n" : "") + "file '" + Q(cur) + "'\n");
                     ok = await RunAsync(ff, $"-y -hide_banner -loglevel error -f concat -safe 0 -i \"{list}\" -c copy -movflags +faststart \"{joined}\"", joined);
                     if (ok)
                     {
                         double total = ClipLibrary.Mp4DurationSeconds(joined);
                         double start = Math.Max(0, total - n);
-                        ok = await RunAsync(ff, $"-y -hide_banner -loglevel error -ss {F(start)} -i \"{joined}\" -c copy -movflags +faststart \"{tmp}\"", tmp);
+                        ok = await CutCopyAtKeyframeAsync(ff, joined, start, tmp);
                     }
                 }
                 return ok && Finalize(tmp, destPath);
@@ -121,20 +133,37 @@ namespace SpartaClips
             finally { TryDel(list); TryDel(joined); }
         }
 
+        // Stream-copy cut that starts EXACTLY on a video keyframe (the one at/just before `start`). A copy cut can only begin
+        // video at a keyframe (~2.6 s apart in screen capture) while audio starts at the exact time — ffmpeg papers over the
+        // difference with an edit list that our later steps (game-audio swap, AV1 transcode) don't honour, so sound ended up
+        // a random 0–2.6 s off per save (measured: −464 ms). Cutting on the keyframe makes both streams start together.
+        private static async Task<bool> CutCopyAtKeyframeAsync(string ff, string src, double start, string dst)
+        {
+            double k = 0;
+            foreach (var t in await KeyframesAsync(src)) { if (t <= start + 0.0005) k = t; else break; }
+            string ss = (k + 0.0005).ToString("0.000000", CultureInfo.InvariantCulture);   // a hair past the keyframe → the seek lands ON it
+            return await RunAsync(ff, $"-y -hide_banner -loglevel error -ss {ss} -i \"{src}\" -c copy -avoid_negative_ts make_zero -movflags +faststart \"{dst}\"", dst);
+        }
+
         // Earlier segment (different size) → scaled + letterboxed into the current frame, its last `need` seconds joined in
         // front of the current segment; re-encoded once on the GPU at about the capture's own bitrate. Audio: each segment's
         // own track (silence filled in if one has none).
-        private static async Task<bool> JoinResizedAsync(string ff, string prev, string cur, double need, double curDur, int w, int h, string dst)
+        private static async Task<bool> JoinResizedAsync(string ff, string prev, string cur, double need, double curDur, int w, int h, string dst, double prevSpan = 0)
         {
             double prevDur = ClipLibrary.Mp4DurationSeconds(prev); if (prevDur <= 0 || need <= 0.05) return false;
-            double start = Math.Max(0, prevDur - need), tail = prevDur - start;
+            double span = prevSpan > prevDur ? prevSpan : prevDur;              // prev's timeline up to cur's REAL start (gap included)
+            double start = Math.Max(0, span - need); if (start > prevDur - 0.05) start = Math.Max(0, prevDur - 0.05);
+            double tail = span - start;                                          // last frame holds through the gap
             bool a0 = await HasAudioAsync(prev), a1 = await HasAudioAsync(cur);
             w -= w % 2; h -= h % 2;
             const string AF = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
             string fc =
-                $"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p[v0];" +
+                // The earlier part's video and audio are forced to EXACTLY `tail` seconds before the concat — VFR capture makes
+                // the last frame's duration uncertain, and any length difference shifted everything after the join point
+                // (measured: sound up to ~120 ms off, varying per save). tpad clones the last frame; apad+atrim pads/cuts audio.
+                $"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p,tpad=stop_mode=clone:stop_duration={F(span - prevDur + 2)},trim=duration={F(tail)},setpts=PTS-STARTPTS[v0];" +
                 $"[1:v]scale={w}:{h}:flags=lanczos,setsar=1,format=yuv420p[v1];" +
-                (a0 ? $"[0:a]{AF},asetpts=PTS-STARTPTS[a0];" : $"anullsrc=r=48000:cl=stereo,atrim=duration={F(tail)},{AF}[a0];") +
+                (a0 ? $"[0:a]{AF},apad,atrim=duration={F(tail)},asetpts=PTS-STARTPTS[a0];" : $"anullsrc=r=48000:cl=stereo,atrim=duration={F(tail)},{AF}[a0];") +
                 (a1 ? $"[1:a]{AF},asetpts=PTS-STARTPTS[a1];" : $"anullsrc=r=48000:cl=stereo,atrim=duration={F(curDur)},{AF}[a1];") +
                 "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]";
             long kb = 20000;
@@ -160,6 +189,27 @@ namespace SpartaClips
             if (_hw264 != null) return _hw264;
             foreach (var e in new[] { "h264_amf", "h264_nvenc", "h264_qsv" }) if (Av1Transcoder.EncoderWorks(e)) return _hw264 = e;
             return _hw264 = "";
+        }
+        private static async Task<(double video, double audio)> StreamDurationsAsync(string path)
+        {
+            try
+            {
+                string? ff = Ff; if (ff == null) return (0, 0);
+                string probe = Path.Combine(Path.GetDirectoryName(ff)!, "ffprobe.exe");
+                var psi = new ProcessStartInfo(probe, $"-v error -show_entries stream=codec_type,duration -of csv=p=0 \"{path}\"")
+                { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+                using var p = Process.Start(psi); if (p == null) return (0, 0);
+                var o = p.StandardOutput.ReadToEndAsync(); await p.StandardError.ReadToEndAsync(); await p.WaitForExitAsync();
+                double v = 0, a = 0;
+                foreach (var line in (await o).Split('\n'))
+                {
+                    var f = line.Trim().Split(','); if (f.Length < 2) continue;
+                    if (!double.TryParse(f[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double d)) continue;
+                    if (f[0] == "video") v = d; else if (f[0] == "audio") a = d;
+                }
+                return (v, a);
+            }
+            catch { return (0, 0); }
         }
         private static async Task<bool> HasAudioAsync(string path)
         {
@@ -494,9 +544,14 @@ namespace SpartaClips
         /// a replay ring dump that ENDS where the video ends (trimmed / left-padded to fit); else both start together
         /// (full recording). Keeps the original audio — returns false — when the game track is silent (the game made no
         /// sound, or its audio came from another process), so per-app capture can never make a clip quieter.</summary>
-        public static async Task<bool> ReplaceAudioAsync(string mp4, string wav, bool alignEnd)
+        public static async Task<bool> ReplaceAudioAsync(string mp4, string wav, bool alignEnd) => (await AlignAndReplaceAudioAsync(mp4, wav, alignEnd)).ok;
+
+        /// <summary>As ReplaceAudioAsync, and returns the measured sync correction `lag` (seconds; + = the game track belongs
+        /// LATER than the save-time estimate). Sidecars dumped at the same instant (mic/chat) need the same shift.</summary>
+        public static async Task<(bool ok, double lag)> AlignAndReplaceAudioAsync(string mp4, string wav, bool alignEnd,
+            string? syncRef = null, double syncRefOffset = 0)
         {
-            string? ff = Ff; if (ff == null || !File.Exists(mp4) || !File.Exists(wav)) return false;
+            string? ff = Ff; if (ff == null || !File.Exists(mp4) || !File.Exists(wav)) return (false, 0);
             string tmp = Path.Combine(TempDir, "_game_" + Guid.NewGuid().ToString("N") + ".mp4");
             try
             {
@@ -509,31 +564,101 @@ namespace SpartaClips
                     while (!audible && (n = r.Read(buf, 0, buf.Length)) > 0)
                         for (int i = 0; i + 1 < n; i += 2) { int v = (short)(buf[i] | (buf[i + 1] << 8)); if (v > 8 || v < -8) { audible = true; break; } }
                 }
-                if (vid <= 0 || aud <= 0) return false;
-                if (!audible) { DiagLog.Line("CLIP", "game audio silent → keeping the original track"); return false; }
+                if (vid <= 0 || aud <= 0) return (false, 0);
+                if (!audible) { DiagLog.Line("CLIP", "game audio silent → keeping the original track"); return (false, 0); }
+                // Where the game track's first sample lands on the video timeline. The save-time estimate (ring end = video
+                // end for replays, start = start for recordings) is off by the recorder's stop/start latency — the clip's
+                // own (device-loopback) track IS in sync with the video, so measure the true offset against it.
+                // before: end-alignment only → sound ~40 ms late on a light test window, more in heavy games.
+                double s0base = alignEnd ? vid - aud : 0;
+                bool hasOrig = await HasAudioAsync(mp4);
+                // Sync reference: the RAW newest buffer segment when given (exactly what the recorder wrote — its audio is
+                // in sync with its video, and it occupies the clip's tail starting at syncRefOffset). The assembled clip's
+                // own track is the fallback: joins/cuts can leave gaps in it (a closed window's segment has audio but no
+                // video), which made the measurement chase a broken reference.
+                double lag = 0;
+                if (syncRef != null && File.Exists(syncRef) && await HasAudioAsync(syncRef))
+                {
+                    double rd = ClipLibrary.Mp4DurationSeconds(syncRef), w = Math.Min(rd, 20);
+                    if (rd > 1) lag = await MeasureLagAsync(ff, syncRef, rd - w, w, syncRefOffset + rd - w, wav, s0base);
+                }
+                else if (hasOrig) { double w = Math.Min(vid, 20); lag = await MeasureLagAsync(ff, mp4, vid - w, w, vid - w, wav, s0base); }
+                double s0 = s0base + lag;
                 string seek = "", delay = "";
-                if (alignEnd && aud > vid + 0.01) seek = $"-ss {F(aud - vid)} ";                                 // ring longer than the clip → drop its head
-                else if (alignEnd && vid > aud + 0.01) delay = $"adelay={(long)((vid - aud) * 1000)}:all=1,";  // ring shorter → right-align it
+                if (s0 < -0.005) seek = $"-ss {F(-s0)} ";                                          // game track starts before the clip → drop its head
+                else if (s0 > 0.005) delay = $"adelay={(long)Math.Round(s0 * 1000)}:all=1,";       // starts later → push it right
                 string args = $"-y -hide_banner -loglevel error -i \"{mp4}\" {seek}-i \"{wav}\" -map 0:v:0 -map 1:a:0 -c:v copy " +
                               $"-af \"{delay}apad\" -c:a aac -b:a 192k -shortest -movflags +faststart \"{tmp}\"";
                 // The game ring restarts when follow-focus switches windows, so it can be shorter than a joined replay. Then
                 // the part BEFORE the switch keeps the clip's own recorded audio instead of going silent.
-                double gap = vid - aud;
-                if (alignEnd && gap > 0.5 && await HasAudioAsync(mp4))
+                double gap = s0;
+                if (gap > 0.5 && hasOrig)
                 {
                     const string AF = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
-                    string fc = $"[0:a]atrim=0:{F(gap)},asetpts=PTS-STARTPTS,{AF}[h];[1:a]{AF},asetpts=PTS-STARTPTS[t];[h][t]concat=n=2:v=0:a=1,apad[a]";
+                    string fc = $"[0:a]atrim=0:{F(gap)},asetpts=PTS-STARTPTS,{AF}[h];[1:a]{AF},asetpts=PTS-STARTPTS[t];[h][t]concat=n=2:v=0:a=1,apad[a]";   // head + game from s0
                     args = $"-y -hide_banner -loglevel error -i \"{mp4}\" -i \"{wav}\" -filter_complex \"{fc}\" -map 0:v:0 -map \"[a]\" -c:v copy " +
                            $"-c:a aac -b:a 192k -shortest -movflags +faststart \"{tmp}\"";
                 }
-                if (!await RunAsync(ff, args, tmp)) return false;
+                if (!await RunAsync(ff, args, tmp)) return (false, 0);
                 bool ok = Finalize(tmp, mp4);
-                DiagLog.Line("CLIP", ok ? "game audio muxed -> " + Path.GetFileName(mp4) : "game audio mux finalize failed");
-                return ok;
+                DiagLog.Line("CLIP", ok ? $"game audio muxed (sync {lag * 1000:+0;-0;0} ms) -> " + Path.GetFileName(mp4) : "game audio mux finalize failed");
+                return (ok, ok ? lag : 0);
             }
-            catch (Exception ex) { DiagLog.Line("CLIP", "game audio mux err: " + ex.Message); return false; }
+            catch (Exception ex) { DiagLog.Line("CLIP", "game audio mux err: " + ex.Message); return (false, 0); }
             finally { TryDel(tmp); }
         }
+
+        // Cross-correlate loudness envelopes (1 kHz) of the clip's own audio (last ≤20 s) against the game track placed at
+        // s0base; search ±1.5 s; returns the best shift in seconds, or 0 when there's no confident match (silent / different
+        // content) — then the save-time estimate stands. Envelopes make it robust to the device track being quiet (Sonar at
+        // 5% still leaves the waveform's shape) and to small spectral differences between the two captures.
+        // refFrom/w = the reference window inside refPath; x0 = the CLIP time where that window starts.
+        private static async Task<double> MeasureLagAsync(string ff, string refPath, double refFrom, double w, double x0, string wav, double s0base)
+        {
+            try
+            {
+                const double M = 1.5; const int SR = 8000, ER = 1000;
+                double g0 = Math.Max(0, x0 - M - s0base);                                    // game-track seconds covering [x0-M, x0+w+M]
+                var x = await DecodeMonoAsync(ff, $"-ss {F(refFrom)} -i \"{refPath}\" -t {F(w)}", SR);
+                var g = await DecodeMonoAsync(ff, $"-ss {F(g0)} -i \"{wav}\" -t {F(w + 2 * M)}", SR);
+                if (x == null || g == null || x.Length < SR || g.Length < SR) return 0;
+                double[] xe = Envelope(x, SR / ER), ge = Envelope(g, SR / ER);
+                double gStartVideo = s0base + g0;                                            // video time of ge[0]
+                Center(xe); Center(ge);
+                double nx = Math.Sqrt(Dot(xe, xe)); if (nx < 1e-6) return 0;
+                int maxLag = (int)(M * ER), best = 0; double bestC = -1;
+                for (int L = -maxLag; L <= maxLag; L++)
+                {
+                    // x(t) vs g(t - L): ge index = (x0 + t/ER - L/ER - gStartVideo) * ER
+                    int off = (int)Math.Round((x0 - gStartVideo) * ER) - L;
+                    double sum = 0, ng = 0; int lo = Math.Max(0, -off), hi = Math.Min(xe.Length, ge.Length - off);
+                    for (int t = lo; t < hi; t++) { double gv = ge[t + off]; sum += xe[t] * gv; ng += gv * gv; }
+                    if (hi - lo < xe.Length / 2 || ng <= 0) continue;
+                    double c = sum / (nx * Math.Sqrt(ng));
+                    if (c > bestC) { bestC = c; best = L; }
+                }
+                DiagLog.Line("CLIP", $"audio sync: best shift {best} ms (match {bestC:0.00})");
+                return bestC >= 0.35 ? best / (double)ER : 0;
+            }
+            catch (Exception ex) { DiagLog.Line("CLIP", "audio sync measure err: " + ex.Message); return 0; }
+        }
+        private static async Task<short[]?> DecodeMonoAsync(string ff, string input, int sr)
+        {
+            var psi = new ProcessStartInfo(ff, $"-hide_banner -loglevel error {input} -vn -ac 1 -ar {sr} -f s16le -")
+            { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+            using var p = Process.Start(psi); if (p == null) return null;
+            var errT = p.StandardError.ReadToEndAsync();
+            using var ms = new MemoryStream(); await p.StandardOutput.BaseStream.CopyToAsync(ms); await errT; await p.WaitForExitAsync();
+            var b = ms.ToArray(); var s = new short[b.Length / 2]; Buffer.BlockCopy(b, 0, s, 0, s.Length * 2); return s;
+        }
+        private static double[] Envelope(short[] s, int factor)
+        {
+            var e = new double[s.Length / factor];
+            for (int i = 0; i < e.Length; i++) { double a = 0; for (int k = 0; k < factor; k++) a += Math.Abs((int)s[i * factor + k]); e[i] = a / factor; }
+            return e;
+        }
+        private static void Center(double[] a) { double m = 0; foreach (var v in a) m += v; m /= Math.Max(1, a.Length); for (int i = 0; i < a.Length; i++) a[i] -= m; }
+        private static double Dot(double[] a, double[] b) { double s = 0; for (int i = 0; i < a.Length; i++) s += a[i] * b[i]; return s; }
 
         private static async Task<bool> RunAsync(string ff, string args, string dst)
         {

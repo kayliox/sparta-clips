@@ -1060,14 +1060,23 @@ namespace SpartaClips
                 string? outName = await ComposeLastSeconds(_bufPrev, cur, _replayLen, game);
                 // keep the just-stopped segment as the new prev so coverage continues, then roll a fresh current
                 TryDelete(_bufPrev); _bufPrev = cur; StartSegment();
-                if (outName != null && File.Exists(gameTmp)) await ClipFfmpeg.ReplaceAudioAsync(Path.Combine(ClipsDir, outName), gameTmp, alignEnd: true);   // ring ends where the clip ends
+                double syncLag = 0;   // measured game-track correction — mic/chat were dumped at the same instant, so they share it
+                if (outName != null && File.Exists(gameTmp))
+                {
+                    // Sync reference = the raw segment just stopped (`cur`, still on disk as _bufPrev): it is the clip's tail.
+                    string clipPath = Path.Combine(ClipsDir, outName);
+                    double vid = 0, curLen = 0;
+                    try { vid = ClipLibrary.Mp4DurationSeconds(clipPath); curLen = ClipLibrary.Mp4DurationSeconds(cur); } catch { }
+                    syncLag = (await ClipFfmpeg.AlignAndReplaceAudioAsync(clipPath, gameTmp, alignEnd: true,
+                        syncRef: curLen > 0 && vid > 0 ? cur : null, syncRefOffset: Math.Max(0, vid - curLen))).lag;
+                }
                 // The mic/chat rings hold replayLen seconds, but the clip can be SHORTER (follow-focus starts a fresh
                 // segment; a size change drops the previous one). Both end at the save point → keep only the tail that
                 // matches the video. before: a 21 s replay got a 60 s chat track, ~39 s out of sync.
                 if (outName != null)
                 {
                     double vid = 0; try { vid = ClipLibrary.Mp4DurationSeconds(Path.Combine(ClipsDir, outName)); } catch { }
-                    if (vid > 0) { TrimWavToTail(micTmp, vid); TrimWavToTail(chatTmp, vid); }
+                    if (vid > 0) { FitSidecar(micTmp, vid, syncLag); FitSidecar(chatTmp, vid, syncLag); }
                 }
                 if (outName != null && Av1Mode) { Notify?.Invoke("transcoding", "{}"); outName = await TranscodeReplayAv1(outName); }
                 if (outName != null)
@@ -1118,6 +1127,8 @@ namespace SpartaClips
                 DiagLog.Line("CLIP", "replay segment failed: " + (e.Error ?? "?") + " — restarting buffer");
                 _ = Task.Run(() => RestartFailedSegmentAsync(rec));
             };
+            _segStart[p] = DateTime.UtcNow;   // real start time → the replay join keeps the gap between segments
+            foreach (var k in _segStart.Keys) if (k != p && !File.Exists(k)) _segStart.TryRemove(k, out _);
             rec.Record(p);
         }
 
@@ -1152,8 +1163,11 @@ namespace SpartaClips
         }
 
         // Stitch the last N seconds (prev tail + current) into a Game_…_replay.mp4. Returns the new name, or null.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _segStart = new();
         private static async Task<string?> ComposeLastSeconds(string prev, string cur, int n, string? game)
         {
+            double prevSpan = !string.IsNullOrEmpty(prev) && _segStart.TryGetValue(prev, out var ps) && _segStart.TryGetValue(cur, out var cs)
+                ? (cs - ps).TotalSeconds : 0;
             string outName = Unique(SafeName(string.IsNullOrWhiteSpace(game) ? "Desktop" : game!)
                              + "_" + DateTime.Now.ToString("dd.MM.yyyy.HH.mm") + "_replay.mp4");
             string outPath = Path.Combine(ClipsDir, outName);
@@ -1161,7 +1175,7 @@ namespace SpartaClips
             // Primary: ffmpeg concat + STREAM COPY — exact capture quality, instant, can't fail on encode, and never
             // leaves a partial in the gallery (temp → validate → atomic move). Replaces the old MediaComposition
             // re-encode that produced low-bitrate / 0-byte clips.
-            if (ClipFfmpeg.Ready && await ClipFfmpeg.ConcatLastSecondsAsync(prev, cur, n, outPath))
+            if (ClipFfmpeg.Ready && await ClipFfmpeg.ConcatLastSecondsAsync(prev, cur, n, outPath, prevSpan))
             { DiagLog.Line("CLIP", "replay (ff) -> " + outName); return outName; }
 
             // Fallback (ffmpeg not yet downloaded): MediaComposition stitch → H.264. Validated; deletes any orphan.
@@ -1204,6 +1218,31 @@ namespace SpartaClips
             catch (Exception ex) { DiagLog.Line("CLIP", "compose err: " + ex.Message); if (created != null) { try { await created.DeleteAsync(); } catch { } } return null; }
         }
         private static void TryDelete(string? p) { try { if (!string.IsNullOrEmpty(p) && File.Exists(p)) File.Delete(p); } catch { } }
+        // Replay sidecar → exactly `vid` seconds lined up with the video: the ring ends at the save instant, which lands at
+        // video time vid + lag (lag = the measured game-track correction). Keeps ring [len-vid-lag, len-lag], padding with
+        // silence where that window runs off either end. lag 0 == TrimWavToTail.
+        private static void FitSidecar(string path, double vid, double lag)
+        {
+            if (Math.Abs(lag) < 0.001) { TrimWavToTail(path, vid); return; }
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
+            string tmp = path + ".fit";
+            try
+            {
+                using (var r = new NAudio.Wave.WaveFileReader(path))
+                {
+                    var fmt = r.WaveFormat; int block = fmt.BlockAlign; double len = r.TotalTime.TotalSeconds;
+                    double start = len - vid - lag, end = len - lag;
+                    long Bytes(double sec) { long b = (long)(sec * fmt.AverageBytesPerSecond); return b - b % block; }
+                    using var w = new NAudio.Wave.WaveFileWriter(tmp, fmt);
+                    if (start < 0) { var z = new byte[Bytes(-start)]; w.Write(z, 0, z.Length); start = 0; }
+                    r.Position = Bytes(start); long want = Bytes(Math.Min(end, len) - start); var buf = new byte[block * 4096];
+                    while (want > 0) { int n = r.Read(buf, 0, (int)Math.Min(buf.Length, want)); if (n <= 0) break; w.Write(buf, 0, n); want -= n; }
+                    if (end > len) { var z = new byte[Bytes(end - len)]; w.Write(z, 0, z.Length); }
+                }
+                File.Delete(path); File.Move(tmp, path);
+            }
+            catch (Exception ex) { DiagLog.Line("CLIP", "sidecar fit err: " + ex.Message); try { if (File.Exists(tmp)) File.Delete(tmp); } catch { } }
+        }
         // Keep only the last `seconds` of a PCM WAV (in place). No-op when it's already that short or missing.
         private static void TrimWavToTail(string path, double seconds)
         {
