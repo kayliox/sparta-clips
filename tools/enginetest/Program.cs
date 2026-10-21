@@ -7,6 +7,7 @@
 //   E. share resolution     — small tiers scale down, the 500 MB (Nitro) tier stays native
 //   F. capture-target filter— desktop / null / shell windows are never capture targets
 //   G. share mix            — a chat track muted in the editor stays out of the Discord share
+//   H. window-switch replay — segments of different sizes are letterboxed + joined (full length, not dropped)
 //
 // C plays a quiet (-26 dBFS) 440 Hz tone for ~2 s on the default output device. Needs ffmpeg (fetched by the app on
 // first run, %APPDATA%\SpartaClips\tools\ffmpeg); C/D are SKIPPED without it.
@@ -100,6 +101,21 @@ if (haveFf)
     Check("G. share leaves a muted chat track out", muted < -60 && live > -30, $"chat muted {muted:F1} dB · chat on {live:F1} dB");
 }
 else Skip("G. share leaves a muted chat track out", "no ffmpeg");
+
+// H — replay spanning a window switch (segments of different sizes): earlier footage letterboxed + joined, full length
+if (haveFf)
+{
+    string prev = Path.Combine(tmp, "h_prev.mp4"), cur = Path.Combine(tmp, "h_cur.mp4"), dst = Path.Combine(tmp, "h_replay.mp4"), png = Path.Combine(tmp, "h.png");
+    Ffmpeg($"-f lavfi -i color=c=green:s=1920x1080:r=30:d=30 -f lavfi -i sine=f=440:r=48000:d=30 -ac 2 -c:v libx264 -preset ultrafast -c:a aac -shortest \"{prev}\"");
+    Ffmpeg($"-f lavfi -i color=c=blue:s=3440x1440:r=30:d=10 -f lavfi -i sine=f=880:r=48000:d=10 -ac 2 -c:v libx264 -preset ultrafast -c:a aac -shortest \"{cur}\"");
+    bool joined = ((Task<bool>)Call(ffm, "ConcatLastSecondsAsync", prev, cur, 30, dst)).GetAwaiter().GetResult();
+    double len = joined ? (double)Call(T("ClipLibrary"), "Mp4DurationSeconds", dst) : 0;
+    Ffmpeg($"-ss 5 -i \"{dst}\" -frames:v 1 \"{png}\"");
+    bool bars = false; int width = 0;
+    if (File.Exists(png)) using (var bmp = new System.Drawing.Bitmap(png)) { width = bmp.Width; var bar = bmp.GetPixel(200, bmp.Height / 2); var pic = bmp.GetPixel(bmp.Width / 2, bmp.Height / 2); bars = bar.G < 20 && pic.G > 100; }
+    Check("H. window-switch replay joined (full length, letterboxed)", joined && Math.Abs(len - 30) < 0.6 && width == 3440 && bars, $"joined={joined} length={len:F1}s width={width} letterboxed={bars}");
+}
+else Skip("H. window-switch replay joined", "no ffmpeg");
 
 // E — share resolution ladder for a 60 s 3440x1440 @ 26 fps clip
 int H(int tierMb) { double vbps = (tierMb * 8.0 * 1048576 * 0.95 - 160_000 * 60) / 60; return (int)Call(share, "ShareHeight", vbps, 3440, 1440, 26.0); }

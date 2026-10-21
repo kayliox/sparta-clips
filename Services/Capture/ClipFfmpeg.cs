@@ -77,12 +77,22 @@ namespace SpartaClips
             try
             {
                 bool ok;
-                // The capture target can change between segments (focus moved to another window) → different frame
-                // sizes, which a stream-copy concat turns into a corrupt file. Then the replay is just the current segment.
+                // The capture target can change between segments (follow-focus moved to another window) → different
+                // frame sizes, which a stream-copy concat would turn into a corrupt file. Fit the earlier footage into the
+                // current frame (scaled, letterboxed — never stretched) and join both in ONE GPU encode, so the replay
+                // still holds the full n seconds. before: the earlier footage was dropped — a save right after a window
+                // switch produced a 0.8 s "replay".
                 if (!(curDur >= n || string.IsNullOrEmpty(prev) || !File.Exists(prev)))
                 {
                     var a = await MediaInfoAsync(prev); var b = await MediaInfoAsync(cur);
-                    if (a.width != b.width || a.height != b.height) { DiagLog.Line("CLIP", $"replay: segment size changed ({a.width}x{a.height} -> {b.width}x{b.height}) — using the current segment only"); prev = ""; }
+                    if ((a.width != b.width || a.height != b.height) && b.width > 0 && b.height > 0)
+                    {
+                        DiagLog.Line("CLIP", $"replay: segment size changed ({a.width}x{a.height} -> {b.width}x{b.height}) — fitting the earlier footage and joining");
+                        bool joinedOk = await JoinResizedAsync(ff, prev, cur, n - curDur, curDur, b.width, b.height, tmp);
+                        if (joinedOk) return Finalize(tmp, destPath);
+                        DiagLog.Line("CLIP", "replay: fit-and-join failed — using the current segment only");
+                        prev = "";
+                    }
                 }
                 if (curDur >= n || string.IsNullOrEmpty(prev) || !File.Exists(prev))
                 {
@@ -109,6 +119,61 @@ namespace SpartaClips
             }
             catch (Exception ex) { DiagLog.Line("CLIP", "ff concat err: " + ex.Message); TryDel(tmp); return false; }
             finally { TryDel(list); TryDel(joined); }
+        }
+
+        // Earlier segment (different size) → scaled + letterboxed into the current frame, its last `need` seconds joined in
+        // front of the current segment; re-encoded once on the GPU at about the capture's own bitrate. Audio: each segment's
+        // own track (silence filled in if one has none).
+        private static async Task<bool> JoinResizedAsync(string ff, string prev, string cur, double need, double curDur, int w, int h, string dst)
+        {
+            double prevDur = ClipLibrary.Mp4DurationSeconds(prev); if (prevDur <= 0 || need <= 0.05) return false;
+            double start = Math.Max(0, prevDur - need), tail = prevDur - start;
+            bool a0 = await HasAudioAsync(prev), a1 = await HasAudioAsync(cur);
+            w -= w % 2; h -= h % 2;
+            const string AF = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
+            string fc =
+                $"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p[v0];" +
+                $"[1:v]scale={w}:{h}:flags=lanczos,setsar=1,format=yuv420p[v1];" +
+                (a0 ? $"[0:a]{AF},asetpts=PTS-STARTPTS[a0];" : $"anullsrc=r=48000:cl=stereo,atrim=duration={F(tail)},{AF}[a0];") +
+                (a1 ? $"[1:a]{AF},asetpts=PTS-STARTPTS[a1];" : $"anullsrc=r=48000:cl=stereo,atrim=duration={F(curDur)},{AF}[a1];") +
+                "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]";
+            long kb = 20000;
+            try { kb = Math.Clamp((long)(new FileInfo(cur).Length * 8 / Math.Max(1, curDur) / 1000 * 1.1), 4000, 150000); } catch { }
+            string enc = HwH264();
+            string rate = $"-b:v {kb}k -maxrate {kb * 3 / 2}k -bufsize {kb * 2}k";
+            string venc = enc switch
+            {
+                "h264_amf"   => $"-c:v h264_amf -quality quality -rc vbr_peak {rate}",
+                "h264_nvenc" => $"-c:v h264_nvenc -preset p5 -rc vbr {rate}",
+                "h264_qsv"   => $"-c:v h264_qsv -preset medium {rate}",
+                _            => $"-c:v libx264 -preset veryfast -crf 18",
+            };
+            string args = $"-y -hide_banner -loglevel error -ss {F(start)} -i \"{prev}\" -i \"{cur}\" -filter_complex \"{fc}\" -map \"[v]\" -map \"[a]\" {venc} -pix_fmt yuv420p -c:a aac -b:a 192k -movflags +faststart \"{dst}\"";
+            bool ok = await RunAsync(ff, args, dst);
+            if (!ok && enc.Length > 0)   // a hardware encoder can refuse odd sizes → software fallback
+                ok = await RunAsync(ff, args.Replace(venc, "-c:v libx264 -preset veryfast -crf 18"), dst);
+            return ok;
+        }
+        private static string? _hw264;
+        private static string HwH264()
+        {
+            if (_hw264 != null) return _hw264;
+            foreach (var e in new[] { "h264_amf", "h264_nvenc", "h264_qsv" }) if (Av1Transcoder.EncoderWorks(e)) return _hw264 = e;
+            return _hw264 = "";
+        }
+        private static async Task<bool> HasAudioAsync(string path)
+        {
+            try
+            {
+                string? ff = Ff; if (ff == null) return false;
+                string probe = Path.Combine(Path.GetDirectoryName(ff)!, "ffprobe.exe");
+                var psi = new ProcessStartInfo(probe, $"-v error -select_streams a -show_entries stream=index -of csv=p=0 \"{path}\"")
+                { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+                using var p = Process.Start(psi); if (p == null) return false;
+                var o = p.StandardOutput.ReadToEndAsync(); await p.StandardError.ReadToEndAsync(); await p.WaitForExitAsync();
+                return (await o).Trim().Length > 0;
+            }
+            catch { return false; }
         }
 
         // ── Editor trim [start,end] by STREAM COPY (lossless, fast; works for H.264/H.265/AV1 alike) → destPath. ──
@@ -451,6 +516,16 @@ namespace SpartaClips
                 else if (alignEnd && vid > aud + 0.01) delay = $"adelay={(long)((vid - aud) * 1000)}:all=1,";  // ring shorter → right-align it
                 string args = $"-y -hide_banner -loglevel error -i \"{mp4}\" {seek}-i \"{wav}\" -map 0:v:0 -map 1:a:0 -c:v copy " +
                               $"-af \"{delay}apad\" -c:a aac -b:a 192k -shortest -movflags +faststart \"{tmp}\"";
+                // The game ring restarts when follow-focus switches windows, so it can be shorter than a joined replay. Then
+                // the part BEFORE the switch keeps the clip's own recorded audio instead of going silent.
+                double gap = vid - aud;
+                if (alignEnd && gap > 0.5 && await HasAudioAsync(mp4))
+                {
+                    const string AF = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
+                    string fc = $"[0:a]atrim=0:{F(gap)},asetpts=PTS-STARTPTS,{AF}[h];[1:a]{AF},asetpts=PTS-STARTPTS[t];[h][t]concat=n=2:v=0:a=1,apad[a]";
+                    args = $"-y -hide_banner -loglevel error -i \"{mp4}\" -i \"{wav}\" -filter_complex \"{fc}\" -map 0:v:0 -map \"[a]\" -c:v copy " +
+                           $"-c:a aac -b:a 192k -shortest -movflags +faststart \"{tmp}\"";
+                }
                 if (!await RunAsync(ff, args, tmp)) return false;
                 bool ok = Finalize(tmp, mp4);
                 DiagLog.Line("CLIP", ok ? "game audio muxed -> " + Path.GetFileName(mp4) : "game audio mux finalize failed");
