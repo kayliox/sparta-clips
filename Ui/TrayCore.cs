@@ -21,6 +21,8 @@ namespace SpartaClips
         [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
         [DllImport("user32.dll")] private static extern IntPtr GetDesktopWindow();
         [DllImport("user32.dll")] private static extern IntPtr GetShellWindow();
+        [DllImport("user32.dll")] private static extern bool IsZoomed(IntPtr hWnd);
+        [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr hWnd, int index);
         [StructLayout(LayoutKind.Sequential)] private struct RECT { public int L, T, R, B; }
 
         private readonly NotifyIcon _tray;
@@ -95,6 +97,102 @@ namespace SpartaClips
 
             if (!startHidden) OpenWindow(null);
             else ShowFirstRunTrayHint();   // silent launch → tell the user (once) it's alive in the tray
+
+            StartUpdateChecks();
+            if (JustUpdated)
+            {
+                var t = new System.Windows.Forms.Timer { Interval = 2500 };
+                t.Tick += (s, e) => { t.Stop(); t.Dispose(); Toast(ToastKind.Success, "Sparta Clips updated", "Now on version " + AppUpdater.VersionText(AppUpdater.Current)); };
+                t.Start();
+            }
+        }
+
+        // ── Self-update (AppUpdater + UpdatePrompt) ──
+        // Launched by the installer after an update ("--updated") → a one-time "updated" notice (native toast + the web UI).
+        public static readonly bool JustUpdated = Array.Exists(Environment.GetCommandLineArgs(), a => string.Equals(a, "--updated", StringComparison.OrdinalIgnoreCase));
+        private System.Windows.Forms.Timer? _updTimer;
+        private ReleaseInfo? _pendingUpdate;          // found, waiting for a moment when no game/recording is up front
+        private DateTime _nextUpdCheck = DateTime.UtcNow.AddSeconds(40);
+        private bool _updBusy;
+        private void StartUpdateChecks()
+        {
+            _updTimer = new System.Windows.Forms.Timer { Interval = 30000 };
+            _updTimer.Tick += (s, e) => UpdateTick();
+            _updTimer.Start();
+        }
+        private async void UpdateTick()
+        {
+            if (_pendingUpdate != null) { TryShowUpdate(); return; }
+            if (_updBusy || DateTime.UtcNow < _nextUpdCheck) return;
+            _nextUpdCheck = DateTime.UtcNow.AddHours(6);
+            if (!AppConfig.AutoUpdate() || !AppUpdater.IsInstalledCopy) return;   // a portable/dev copy never updates itself
+            _updBusy = true;
+            try
+            {
+                var r = await AppUpdater.FetchLatestAsync();
+                if (r != null && r.Version > AppUpdater.Current && AppUpdater.ShouldOffer(r))
+                {
+                    try { DiagLog.Line("UPDATE", "available: " + AppUpdater.VersionText(r.Version)); } catch { }
+                    _pendingUpdate = r; _ui.BeginInvoke(new Action(TryShowUpdate));   // UI thread, whatever the await resumed on
+                }
+            }
+            catch { }
+            finally { _updBusy = false; }
+        }
+        // Never pop over a game or during a recording — wait (re-tried every 30 s) until the user is back on the desktop.
+        private bool _updDeferLogged;
+        private void TryShowUpdate()
+        {
+            if (_pendingUpdate == null || Quitting) return;
+            if (UpdatePrompt.IsOpen) { _pendingUpdate = null; return; }
+            if (ClipRecorder.IsRecording || ForegroundIsFullscreenGame())
+            {
+                if (!_updDeferLogged) { _updDeferLogged = true; try { DiagLog.Line("UPDATE", "prompt waits — " + (ClipRecorder.IsRecording ? "recording" : "fullscreen game in front")); } catch { } }
+                return;
+            }
+            var r = _pendingUpdate; _pendingUpdate = null; _updDeferLogged = false;
+            // Shown on top but WITHOUT taking focus — whatever the user is typing/playing in keeps the keyboard.
+            try { UpdatePrompt.ShowFor(r, WindowIsOpen, activate: false); DiagLog.Line("UPDATE", "prompt shown"); }
+            catch (Exception ex) { try { DiagLog.Line("UPDATE", "prompt failed: " + ex); } catch { } }
+        }
+        // Stricter than ForegroundIsGame for the update prompt: an ordinary MAXIMIZED window (browser, Parsec, an
+        // editor) reports a rect covering the whole monitor when that monitor has no taskbar — that's not a game.
+        // Borderless-fullscreen / exclusive games have no caption and aren't "zoomed".
+        private bool ForegroundIsFullscreenGame()
+        {
+            if (!ForegroundIsGame()) return false;
+            try
+            {
+                IntPtr fg = GetForegroundWindow();
+                bool caption = (GetWindowLong(fg, -16 /*GWL_STYLE*/) & 0x00C00000 /*WS_CAPTION*/) == 0x00C00000;
+                return !(IsZoomed(fg) && caption);
+            }
+            catch { return true; }
+        }
+        private bool WindowIsOpen() => _win != null && !_win.IsDisposed && _win.Visible;
+
+        /// <summary>"Check now" (settings / tray). Reports {state: checking|uptodate|available|dev|error, latest} to
+        /// report (the web UI) — or as a toast when null (tray). An available update opens the prompt right away
+        /// (skip/snooze don't apply to a manual check).</summary>
+        public void CheckForUpdatesNow(Action<string>? report)
+        {
+            _ui.BeginInvoke(new Action(async () =>
+            {
+                void Say(string state, string latest = "") { try { report?.Invoke(Newtonsoft.Json.JsonConvert.SerializeObject(new { state, latest })); } catch { } }
+                if (_updBusy) return;
+                _updBusy = true; Say("checking");
+                try
+                {
+                    var r = await AppUpdater.FetchLatestAsync();
+                    string cur = AppUpdater.VersionText(AppUpdater.Current);
+                    if (r == null) { Say("error"); if (report == null) Toast(ToastKind.Warning, "Couldn't check for updates", "Check your connection and try again"); }
+                    else if (r.Version <= AppUpdater.Current) { Say("uptodate", AppUpdater.VersionText(r.Version)); if (report == null) Toast(ToastKind.Success, "You're up to date", "Sparta Clips " + cur); }
+                    else if (!AppUpdater.IsInstalledCopy) { Say("dev", AppUpdater.VersionText(r.Version)); if (report == null) Toast(ToastKind.Warning, "Version " + AppUpdater.VersionText(r.Version) + " is out", "This copy isn't installed — get it from GitHub"); }
+                    else { Say("available", AppUpdater.VersionText(r.Version)); UpdatePrompt.ShowFor(r, WindowIsOpen, activate: true); }
+                }
+                catch (Exception ex) { Say("error"); try { DiagLog.Line("UPDATE", "manual check failed: " + ex.Message); } catch { } }
+                finally { _updBusy = false; }
+            }));
         }
 
         // One-time balloon on the first tray/autostart launch so a silent start doesn't feel like the app "did nothing".
@@ -126,8 +224,9 @@ namespace SpartaClips
             var record = new ToolStripMenuItem("Start recording", null, (s, e) => FireRecordToggle());
             var replay = new ToolStripMenuItem("Save replay", null, (s, e) => FireSaveReplay());
             var armed  = new ToolStripMenuItem("Instant replay armed", null, (s, e) => ToggleArmManual());
+            var update = new ToolStripMenuItem("Check for updates", null, (s, e) => CheckForUpdatesNow(null));
             var quit   = new ToolStripMenuItem("Quit Sparta Clips", null, (s, e) => QuitApp());
-            menu.Items.AddRange(new ToolStripItem[] { open, settings, new ToolStripSeparator(), record, replay, armed, new ToolStripSeparator(), quit });
+            menu.Items.AddRange(new ToolStripItem[] { open, settings, new ToolStripSeparator(), record, replay, armed, new ToolStripSeparator(), update, quit });
             menu.Opening += (s, e) =>
             {
                 try
@@ -168,6 +267,7 @@ namespace SpartaClips
             Quitting = true;
             try { ClipHotkeyHook.Uninstall(); } catch { }
             try { _gameWatch?.Stop(); _gameWatch?.Dispose(); } catch { }
+            try { _updTimer?.Stop(); _updTimer?.Dispose(); } catch { }
             // Finalize an in-progress MANUAL recording first — before: only the replay ring was disarmed, so quitting
             // mid-record tore the process down around an unfinalized MP4 (no moov → unplayable) + partial sidecars.
             try { ClipRecorder.StopAndWait(4000); } catch { }

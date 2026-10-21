@@ -46,6 +46,8 @@
       setArmPolicy:     (mode)       => call(b => b.SetArmPolicy(String(mode || "always"))),
       quitApp:          ()           => call(b => b.QuitApp()),
       openLogsFolder:   ()           => call(b => b.OpenLogsFolder()),
+      getUpdateInfo:    ()           => call(b => b.GetUpdateInfo()),
+      checkForUpdates:  ()           => call(b => b.CheckForUpdates()),   // result via window.onUpdateStatus
       logDiag:          (m)          => call(b => b.LogDiag(String(m || ""))),
       // capture-source picker (session-only override; hwnd travels as a string — see BridgeApi.SetCaptureSource)
       setCaptureSource: (mode, hwnd) => call(b => b.SetCaptureSource(String(mode || "auto"), String(hwnd || ""))),
@@ -254,7 +256,7 @@
       autoHighlight: false, autoClip: false, clipFolder: "", clipFill: false, clipMicMuted: false, galCardScale: 100,
       recHotkey: { ctrl: true, alt: true, vk: 0x78 }, repHotkey: { ctrl: true, alt: true, vk: 0x79 }, markHotkey: { ctrl: true, alt: true, vk: 0x77 },
       dualScreen: null, theme: "spartan",
-      armPolicy: "always", autostart: false, autostartElevated: false, releaseUiOnClose: true, overlayEnabled: true,
+      armPolicy: "always", autostart: false, autostartElevated: false, releaseUiOnClose: true, overlayEnabled: true, autoUpdate: true,
       gameProfiles: [],
     };
   }
@@ -831,6 +833,7 @@
     { const t = $("#toggleAutostartElev"); if (t) t.setAttribute("aria-checked", String(state.settings.autostartElevated === true)); }
     { const t = $("#toggleReleaseOnClose"); if (t) t.setAttribute("aria-checked", String(state.settings.releaseUiOnClose !== false)); }
     { const t = $("#toggleOverlay"); if (t) t.setAttribute("aria-checked", String(state.settings.overlayEnabled !== false)); }
+    { const t = $("#toggleAutoUpdate"); if (t) t.setAttribute("aria-checked", String(state.settings.autoUpdate !== false)); }
   }
   // A small icon per settings section (matched by keyword in the group heading), for scannable nav chips.
   function sectionIcon(title) {
@@ -930,6 +933,28 @@
     { const b = $("#addGameProfile"); if (b) b.addEventListener("click", () => { gameProfilesList().push({ match: "", fps: (state.settings.captureFps | 0) || 120, resH: (state.settings.captureResH | 0) || 1080, mbps: (state.settings.captureBitrate | 0) || 20 }); save(); renderGameProfiles(); const el = $("#gameProfiles"); const inp = el && el.querySelector(".gp-row:last-child .gp-match"); if (inp) inp.focus(); }); }
     renderGameProfiles();
     { const b = $("#openLogsBtn"); if (b) b.addEventListener("click", () => clipsNative.openLogsFolder()); }
+    // ── Updates: C# (AppUpdater) checks GitHub releases; this only shows the version, the toggle and "Check now". ──
+    let _updInfo = null;
+    const updBase = () => !_updInfo ? "Sparta Clips" : "Sparta Clips " + _updInfo.version + (_updInfo.installed ? "" : " · portable copy (updates are for installed copies)");
+    const setUpdStatus = (t) => { const s = $("#updStatus"); if (s) s.textContent = t; };
+    { const t = $("#toggleAutoUpdate"); if (t) t.addEventListener("click", () => { const on = t.getAttribute("aria-checked") !== "true"; t.setAttribute("aria-checked", String(on)); state.settings.autoUpdate = on; save(); showToast("Automatic updates", on ? "Sparta Clips will ask when a new version is out." : "Off — use “Check for updates” any time."); }); }
+    { const b = $("#checkUpdatesBtn"); if (b) b.addEventListener("click", () => { b.disabled = true; clipsNative.checkForUpdates(); setTimeout(() => { b.disabled = false; }, 4000); }); }
+    window.onUpdateStatus = (r) => { try {
+      const st = r && r.state, v = (r && r.latest) || "";
+      const b = $("#checkUpdatesBtn");
+      if (st === "checking") { setUpdStatus(updBase() + " · checking…"); return; }
+      if (b) b.disabled = false;
+      if (st === "uptodate") setUpdStatus(updBase() + " · up to date");
+      else if (st === "available") setUpdStatus(updBase() + " · version " + v + " is available");
+      else if (st === "dev") setUpdStatus(updBase() + " · version " + v + " is on GitHub");
+      else setUpdStatus(updBase() + " · couldn't reach GitHub — try again later");
+    } catch {} };
+    (async () => { try {
+      const j = await clipsNative.getUpdateInfo(); if (!j) return;
+      _updInfo = JSON.parse(j); setUpdStatus(updBase());
+      const h = $("#appVersionHint"); if (h) h.textContent = "Sparta Clips v" + _updInfo.version;
+      if (_updInfo.justUpdated) showToast("Sparta Clips updated", "You're now on version " + _updInfo.version + ".");
+    } catch {} })();
     { const b = $("#quitAppBtn"); if (b) b.addEventListener("click", () => clipsNative.quitApp()); }
   })();
   (function wireCapturePane() {

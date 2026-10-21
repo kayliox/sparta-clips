@@ -42,6 +42,20 @@ jobs:
         shell: pwsh
         run: ./installer/build.ps1 -Version ${{ steps.v.outputs.version }}
 
+      # The app's updater shows the "What's new" list (up to the --- line) in its update prompt — keep that shape.
+      - name: Release notes (every commit in this push, subject lines)
+        shell: pwsh
+        env:
+          COMMITS: ${{ toJSON(github.event.commits) }}
+        run: |
+          $lines = @()
+          try { foreach ($c in ($env:COMMITS | ConvertFrom-Json)) { $s = (($c.message -split "`n")[0]).Trim(); if ($s -and $s -notmatch '^Merge ') { $lines += "- $s" } } } catch { }
+          if (-not $lines) { $lines = @("- Maintenance build") }
+          $body = "## What's new`n" + ($lines -join "`n") + "`n`n---`n" +
+                  "**Download ``SpartaClipsSetup.exe`` below, double-click it, done.** No .NET or admin rights needed.`n`n" +
+                  "Already have Sparta Clips? It updates itself (it asks first) - or run the installer: it updates in place and keeps your clips and settings."
+          Set-Content -Path artifacts/notes.md -Value $body -Encoding utf8
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -50,7 +64,4 @@ jobs:
           target_commitish: ${{ github.sha }}
           make_latest: true
           files: artifacts/SpartaClipsSetup.exe
-          body: |
-            **Download `SpartaClipsSetup.exe` below, double-click it, done.** No .NET or admin rights needed.
-
-            Changes in this build: ${{ github.event.head_commit.message || 'manual build' }}
+          body_path: artifacts/notes.md

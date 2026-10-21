@@ -115,6 +115,20 @@ namespace SpartaClips
         // Fully quit the app from the tray/settings (a window close only hides to tray).
         public void QuitApp() { try { TrayCore.Instance?.QuitApp(); } catch { } }
 
+        // ── Updates (AppUpdater) ──
+        // {version, installed, auto, justUpdated} for the settings "Updates" rows; justUpdated is reported once.
+        private static bool _updatedShown;
+        public string GetUpdateInfo()
+        {
+            bool just = TrayCore.JustUpdated && !_updatedShown; _updatedShown = true;
+            return Newtonsoft.Json.JsonConvert.SerializeObject(new { version = AppUpdater.VersionText(AppUpdater.Current), installed = AppUpdater.IsInstalledCopy, auto = AppConfig.AutoUpdate(), justUpdated = just });
+        }
+        // "Check now" → progress/result via window.onUpdateStatus({state, latest}); an available update opens the prompt.
+        public void CheckForUpdates()
+        {
+            try { TrayCore.Instance?.CheckForUpdatesNow(json => PostToWeb("window.onUpdateStatus && window.onUpdateStatus(" + json + ")")); } catch { }
+        }
+
         // Open the diagnostics log folder.
         public void OpenLogsFolder() { try { System.IO.Directory.CreateDirectory(DiagLog.Dir); Run("explorer.exe", "\"" + DiagLog.Dir + "\""); } catch { } }
 

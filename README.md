@@ -96,8 +96,11 @@ isn't even running while it sits in the tray. Most people won't notice it at all
 <details>
 <summary><b>How do I update?</b></summary>
 
-Download and run the installer again, it updates in place and keeps your clips and settings.
-The download button always gives you the newest version.
+You don't have to do anything. When a new version is out, Sparta Clips asks if you want to install it
+(never while you're in a game). Click **Install update** and it updates itself and reopens.
+You can turn this off, or check by hand, in **Settings → General**.
+
+Running the installer again works too: it updates in place and keeps your clips and settings.
 </details>
 
 <details>

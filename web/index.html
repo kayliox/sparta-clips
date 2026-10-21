@@ -300,6 +300,14 @@
                 <button class="toggle" id="toggleOverlay" role="switch" aria-checked="true" aria-label="In-game recording indicator"></button>
               </div>
               <div class="setting-row">
+                <div class="label"><strong>Automatic updates</strong><span>Check GitHub for new versions and ask before installing — never while you're in a game.</span></div>
+                <button class="toggle" id="toggleAutoUpdate" role="switch" aria-checked="true" aria-label="Automatic updates"></button>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Version</strong><span id="updStatus">Sparta Clips</span></div>
+                <button class="action-btn" id="checkUpdatesBtn">Check for updates</button>
+              </div>
+              <div class="setting-row">
                 <div class="label"><strong>Diagnostics</strong><span>Open the folder with Sparta Clips' logs — handy when reporting a bug.</span></div>
                 <button class="action-btn" id="openLogsBtn">Open logs</button>
               </div>
@@ -309,7 +317,7 @@
               </div>
               <div class="setting-row">
                 <div class="label"><strong>Bridge</strong><span id="nativeBadge" class="hint">Browser preview mode</span></div>
-                <span class="hint">Sparta Clips v0.1</span>
+                <span class="hint" id="appVersionHint">Sparta Clips</span>
               </div>
             </div>
           </div>
