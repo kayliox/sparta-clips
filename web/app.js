@@ -539,14 +539,26 @@
   // ── Rebindable capture hotkeys ──
   const HK_CODE_VK = (() => {
     const m = {};
-    for (let i = 1; i <= 12; i++) m["F" + i] = 0x70 + (i - 1);
+    for (let i = 1; i <= 24; i++) m["F" + i] = 0x70 + (i - 1);
     for (let c = 65; c <= 90; c++) m["Key" + String.fromCharCode(c)] = c;
     for (let d = 0; d <= 9; d++) { m["Digit" + d] = 0x30 + d; m["Numpad" + d] = 0x60 + d; }
-    Object.assign(m, { Space: 0x20, Enter: 0x0D, Backquote: 0xC0, Minus: 0xBD, Equal: 0xBB, Insert: 0x2D, Delete: 0x2E, Home: 0x24, End: 0x23, PageUp: 0x21, PageDown: 0x22 });
+    Object.assign(m, { Space: 0x20, Enter: 0x0D, Tab: 0x09, Backspace: 0x08, Backquote: 0xC0, Minus: 0xBD, Equal: 0xBB, Insert: 0x2D, Delete: 0x2E, Home: 0x24, End: 0x23, PageUp: 0x21, PageDown: 0x22,
+      BracketLeft: 0xDB, BracketRight: 0xDD, Backslash: 0xDC, IntlBackslash: 0xE2, Semicolon: 0xBA, Quote: 0xDE, Comma: 0xBC, Period: 0xBE, Slash: 0xBF,
+      ArrowLeft: 0x25, ArrowUp: 0x26, ArrowRight: 0x27, ArrowDown: 0x28, Pause: 0x13, ScrollLock: 0x91,
+      // Numpad operators send the same key code whether Num Lock is on or off. Numpad Enter is left out on purpose: Windows
+      // reports it as the main Enter key, so binding it would also fire on every normal Enter press.
+      NumpadSubtract: 0x6D, NumpadAdd: 0x6B, NumpadMultiply: 0x6A, NumpadDivide: 0x6F, NumpadDecimal: 0x6E });
     return m;
   })();
-  const HK_NO_MOD_OK = new Set([0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B, 0x2D, 0x2E, 0x24, 0x23, 0x21, 0x22, 0xC0]);
-  const HK_VK_FRIENDLY = { 0xC0: "`", 0xBD: "-", 0xBB: "=", 0x20: "Space", 0x0D: "Enter", 0x2D: "Insert", 0x2E: "Delete", 0x24: "Home", 0x23: "End", 0x21: "PgUp", 0x22: "PgDn" };
+  // Keys that work alone (no Ctrl/Alt/Shift): F-keys, the nav block, ` and the whole numpad — none of them type text in chat
+  // or play a role in most games, so a bare press is a safe hotkey.
+  const HK_NO_MOD_OK = new Set([0x2D, 0x2E, 0x24, 0x23, 0x21, 0x22, 0xC0, 0x13, 0x91, 0x6A, 0x6B, 0x6D, 0x6E, 0x6F]);
+  for (let vk = 0x70; vk <= 0x87; vk++) HK_NO_MOD_OK.add(vk);   // F1–F24
+  for (let vk = 0x60; vk <= 0x69; vk++) HK_NO_MOD_OK.add(vk);   // Num 0–9
+  const HK_VK_FRIENDLY = { 0xC0: "`", 0xBD: "-", 0xBB: "=", 0x20: "Space", 0x0D: "Enter", 0x09: "Tab", 0x08: "Backspace", 0x2D: "Insert", 0x2E: "Delete", 0x24: "Home", 0x23: "End", 0x21: "PgUp", 0x22: "PgDn",
+    0xDB: "[", 0xDD: "]", 0xDC: "\\", 0xE2: "\\", 0xBA: ";", 0xDE: "'", 0xBC: ",", 0xBE: ".", 0xBF: "/",
+    0x25: "←", 0x26: "↑", 0x27: "→", 0x28: "↓", 0x13: "Pause", 0x91: "ScrLk",
+    0x6D: "Num -", 0x6B: "Num +", 0x6A: "Num *", 0x6F: "Num /", 0x6E: "Num ." };
   function hkVkName(vk) {
     if (HK_VK_FRIENDLY[vk]) return HK_VK_FRIENDLY[vk];
     for (const k in HK_CODE_VK) if (HK_CODE_VK[k] === vk) return k.startsWith("Key") ? k.slice(3) : k.startsWith("Digit") ? k.slice(5) : k.startsWith("Numpad") ? "Num" + k.slice(6) : k;
@@ -587,9 +599,9 @@
         if (e.key === "Escape") { end(prev); return; }
         if (["Control", "Alt", "Shift", "Meta", "OS"].includes(e.key)) return;
         const vk = HK_CODE_VK[e.code];
-        if (!vk) { btn.textContent = "Unsupported — use a letter / number / F-key"; return; }
+        if (!vk) { btn.textContent = e.code === "NumpadEnter" ? "Numpad Enter can't be told apart from Enter — pick another key" : "That key can't be a hotkey — try another"; return; }
         const hasMod = e.ctrlKey || e.altKey || e.shiftKey || e.metaKey;
-        if (!hasMod && !HK_NO_MOD_OK.has(vk)) { btn.textContent = "Add a modifier, or use an F-key"; return; }
+        if (!hasMod && !HK_NO_MOD_OK.has(vk)) { btn.textContent = "Add Ctrl / Alt / Shift — or use an F-key or numpad key"; return; }
         const hk = { ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey, win: e.metaKey, vk };
         state.settings[key] = hk; save(); end(hkLabel(hk));
         const r = pushClipHotkeys();
