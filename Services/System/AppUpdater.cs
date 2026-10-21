@@ -130,10 +130,14 @@ namespace SpartaClips
             return s.Length > 1500 ? s[..1500].TrimEnd() + "…" : s;
         }
 
+        private static string DownloadDir => Path.Combine(Path.GetTempPath(), "SpartaClipsUpdate");
+        /// <summary>Startup: remove a downloaded installer left from a previous update (~55 MB in %TEMP%).</summary>
+        public static void CleanupDownloads() { try { if (Directory.Exists(DownloadDir)) Directory.Delete(DownloadDir, true); } catch { } }
+
         /// <summary>Downloads + verifies the installer; returns its path, or null on any failure/mismatch.</summary>
         public static async Task<string?> DownloadAsync(ReleaseInfo r, IProgress<(long done, long total)> progress, CancellationToken ct)
         {
-            string dir = Path.Combine(Path.GetTempPath(), "SpartaClipsUpdate");
+            string dir = DownloadDir;
             string dst = Path.Combine(dir, "SpartaClipsSetup-" + VersionText(r.Version) + ".exe"), part = dst + ".part";
             try
             {

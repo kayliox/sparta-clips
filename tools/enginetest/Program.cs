@@ -139,6 +139,15 @@ if (haveFf)
 }
 else Skip("I. replay join keeps the real segment gap", "no ffmpeg");
 
+// J — update prompt reads the release notes: the "What's new" list (new format) or the commit subject (older releases)
+{
+    var upd = T("AppUpdater");
+    string notesNew = (string)Call(upd, "CleanNotes", "## What's new\n- Fix replay sync\n- Numpad hotkeys\n\n---\n**Download `SpartaClipsSetup.exe` below**");
+    string notesOld = (string)Call(upd, "CleanNotes", "**Download below.**\n\nChanges in this build: Hotkeys: allow numpad\n\nLong body line one\nline two");
+    Check("J. update notes: new format", notesNew == "•  Fix replay sync\n•  Numpad hotkeys", notesNew.Replace("\n", " | "));
+    Check("J. update notes: older releases", notesOld == "•  Hotkeys: allow numpad", notesOld.Replace("\n", " | "));
+}
+
 // E — share resolution ladder for a 60 s 3440x1440 @ 26 fps clip
 int H(int tierMb) { double vbps = (tierMb * 8.0 * 1048576 * 0.95 - 160_000 * 60) / 60; return (int)Call(share, "ShareHeight", vbps, 3440, 1440, 26.0); }
 Check("E. share 10 MB -> 480p", H(10) == 480, H(10) + "p");

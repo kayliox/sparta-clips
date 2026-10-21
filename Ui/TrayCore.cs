@@ -116,6 +116,7 @@ namespace SpartaClips
         private bool _updBusy;
         private void StartUpdateChecks()
         {
+            System.Threading.Tasks.Task.Run(AppUpdater.CleanupDownloads);
             _updTimer = new System.Windows.Forms.Timer { Interval = 30000 };
             _updTimer.Tick += (s, e) => UpdateTick();
             _updTimer.Start();
