@@ -217,6 +217,9 @@ namespace SpartaClips
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (TrayCore.Instance?.Quitting == true) { TrayCore.WebSink = null; base.OnFormClosing(e); return; }
+            // The X keeps Sparta Clips running in the tray — but Windows 11 hides new tray icons behind the ^ overflow, so
+            // the first close looked like a quit. Say where it went (once).
+            if (e.CloseReason == CloseReason.UserClosing && !_forceClose) { try { TrayCore.Instance?.ShowClosedToTrayHintOnce(); } catch { } }
             if (_forceClose || AppConfig.ReleaseUiOnClose())
             {
                 // Let the close proceed → disposes the WebView2 (frees the Chromium render/GPU processes). TrayCore

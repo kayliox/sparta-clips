@@ -212,6 +212,25 @@ namespace SpartaClips
             catch { }
         }
 
+        // First time the window's X is used: a balloon from the tray icon itself, so the user sees the app is still there.
+        public void ShowClosedToTrayHintOnce()
+        {
+            _ui.BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    string marker = System.IO.Path.Combine(AppConfig.Dir, ".closehint");
+                    if (System.IO.File.Exists(marker)) return;
+                    System.IO.Directory.CreateDirectory(AppConfig.Dir);
+                    System.IO.File.WriteAllText(marker, "1");
+                    _tray.BalloonTipTitle = "Sparta Clips is still running";
+                    _tray.BalloonTipText  = "It's in the tray by the clock (under ^ if hidden), still saving instant replays. Right-click the icon to quit.";
+                    _tray.ShowBalloonTip(7000);
+                }
+                catch { }
+            }));
+        }
+
         // ── Tray icon + menu ──
         private NotifyIcon BuildTray()
         {
