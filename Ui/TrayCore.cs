@@ -99,6 +99,12 @@ namespace SpartaClips
             else ShowFirstRunTrayHint();   // silent launch → tell the user (once) it's alive in the tray
 
             StartUpdateChecks();
+            if (Array.Exists(Environment.GetCommandLineArgs(), a => string.Equals(a, "--recovered", StringComparison.OrdinalIgnoreCase)))
+            {
+                var t = new System.Windows.Forms.Timer { Interval = 2500 };
+                t.Tick += (s, e) => { t.Stop(); t.Dispose(); Toast(ToastKind.Warning, "Sparta Clips restarted", "It stopped unexpectedly — instant replay is running again"); };
+                t.Start();
+            }
             if (JustUpdated)
             {
                 var t = new System.Windows.Forms.Timer { Interval = 2500 };
@@ -285,6 +291,7 @@ namespace SpartaClips
         public void QuitApp()
         {
             Quitting = true;
+            Watchdog.MarkCleanExit();   // a deliberate quit — the watchdog must not bring the app back
             try { ClipHotkeyHook.Uninstall(); } catch { }
             try { _gameWatch?.Stop(); _gameWatch?.Dispose(); } catch { }
             try { _updTimer?.Stop(); _updTimer?.Dispose(); } catch { }

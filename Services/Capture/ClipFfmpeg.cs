@@ -156,13 +156,19 @@ namespace SpartaClips
             double tail = span - start;                                          // last frame holds through the gap
             bool a0 = await HasAudioAsync(prev), a1 = await HasAudioAsync(cur);
             w -= w % 2; h -= h % 2;
+            // Both parts are put on the NEWEST segment's frame rate (= the capture rate) before the concat. Window capture
+            // is variable-rate: a mostly-static window (e.g. the Sparta Clips UI itself) arrives at a few fps, and the concat
+            // took its rate from that first input — the whole replay, game part included, came out at ~3.8 fps (measured
+            // 2026-10-23: 103 frames in 33 s). fps= repeats frames of the slow part and keeps every frame of the game.
+            double r = await FrameRateAsync(cur);
+            string R = F(r);
             const string AF = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
             string fc =
                 // The earlier part's video and audio are forced to EXACTLY `tail` seconds before the concat — VFR capture makes
                 // the last frame's duration uncertain, and any length difference shifted everything after the join point
                 // (measured: sound up to ~120 ms off, varying per save). tpad clones the last frame; apad+atrim pads/cuts audio.
-                $"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p,tpad=stop_mode=clone:stop_duration={F(span - prevDur + 2)},trim=duration={F(tail)},setpts=PTS-STARTPTS[v0];" +
-                $"[1:v]scale={w}:{h}:flags=lanczos,setsar=1,format=yuv420p[v1];" +
+                $"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p,fps={R},tpad=stop_mode=clone:stop_duration={F(span - prevDur + 2)},trim=duration={F(tail)},setpts=PTS-STARTPTS[v0];" +
+                $"[1:v]scale={w}:{h}:flags=lanczos,setsar=1,format=yuv420p,fps={R}[v1];" +
                 (a0 ? $"[0:a]{AF},apad,atrim=duration={F(tail)},asetpts=PTS-STARTPTS[a0];" : $"anullsrc=r=48000:cl=stereo,atrim=duration={F(tail)},{AF}[a0];") +
                 (a1 ? $"[1:a]{AF},asetpts=PTS-STARTPTS[a1];" : $"anullsrc=r=48000:cl=stereo,atrim=duration={F(curDur)},{AF}[a1];") +
                 "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]";
@@ -189,6 +195,24 @@ namespace SpartaClips
             if (_hw264 != null) return _hw264;
             foreach (var e in new[] { "h264_amf", "h264_nvenc", "h264_qsv" }) if (Av1Transcoder.EncoderWorks(e)) return _hw264 = e;
             return _hw264 = "";
+        }
+        // Nominal frame rate of a capture segment (r_frame_rate = the encoder's configured rate), clamped to 24-240; 60 if unknown.
+        private static async Task<double> FrameRateAsync(string path)
+        {
+            try
+            {
+                string? ff = Ff; if (ff == null) return 60;
+                string probe = Path.Combine(Path.GetDirectoryName(ff)!, "ffprobe.exe");
+                var psi = new ProcessStartInfo(probe, $"-v error -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 \"{path}\"")
+                { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+                using var p = Process.Start(psi); if (p == null) return 60;
+                var o = p.StandardOutput.ReadToEndAsync(); await p.StandardError.ReadToEndAsync(); await p.WaitForExitAsync();
+                var parts = (await o).Trim().Split('/');
+                double num = double.Parse(parts[0], CultureInfo.InvariantCulture), den = parts.Length > 1 ? double.Parse(parts[1], CultureInfo.InvariantCulture) : 1;
+                double fr = den > 0 ? num / den : 60;
+                return fr >= 24 && fr <= 240 ? fr : 60;
+            }
+            catch { return 60; }
         }
         private static async Task<(double video, double audio)> StreamDurationsAsync(string path)
         {

@@ -21,6 +21,10 @@
     <Product>Sparta Clips</Product>
     <Copyright>© 2026 Kayliox</Copyright>
     <Version>0.1.0</Version>
+    <!-- Never glob the deploy / publish output that lives inside the project folder: MSBuild's {CandidateAssemblyFiles}
+         search runs BEFORE package HintPaths, so a stale ScreenRecorderLib.dll in SpartaClips-final\ or
+         artifacts\publish\ silently won over the referenced package version (the 7.0.1 upgrade "built" against 6.6.0). -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);SpartaClips-final\**;artifacts\**;tools\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <!-- CDP_HOOK = the UI-automation DevTools hook (tools/uidrive.py, smoke/stress/mediatest). Debug builds, or
@@ -33,7 +37,7 @@
        (Dropped vs the launcher: Concentus, SpeexDSPSharp, Nefarius.ViGEm.Client, System.Management.) -->
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2792.45" />
-    <PackageReference Include="ScreenRecorderLib" Version="6.6.0" />   <!-- game-clip capture (WGC + Media Foundation, x64) -->
+    <PackageReference Include="ScreenRecorderLib" Version="7.0.1" />   <!-- game-clip capture (WGC + Media Foundation, x64) -->
     <PackageReference Include="NAudio" Version="2.2.1" />               <!-- mic/chat WASAPI sidecar + the save chime -->
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>

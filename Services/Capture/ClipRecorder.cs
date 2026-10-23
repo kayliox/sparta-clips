@@ -388,6 +388,7 @@ namespace SpartaClips
                 _finalPath = Path.Combine(ClipsDir, file);
                 // AV1 records an H.264 intermediate to TEMP (kept out of the gallery), then ffmpeg transcodes to ClipsDir.
                 string path = Av1Mode ? Path.Combine(Av1TempDir, file) : _finalPath;
+                WaitForPendingDispose();
                 _rec = Recorder.CreateRecorder(BuildOptions());
                 _rec.OnRecordingComplete += (s, e) => Done(true, e.FilePath, null);
                 _rec.OnRecordingFailed   += (s, e) => OnRecFailed(path, e.Error, forceSw);
@@ -587,7 +588,21 @@ namespace SpartaClips
         // can never kill a recording that started while it was pruning/notifying.
         private static void DisposeRec(Recorder? r)
         {
-            if (r != null) System.Threading.Tasks.Task.Run(() => { try { r.Dispose(); } catch { } });
+            if (r == null) return;
+            lock (_disposeLock) _pendingDispose = _pendingDispose.ContinueWith(_ => { try { r.Dispose(); } catch { } }, TaskScheduler.Default);
+        }
+        // Recorder teardown runs off the caller's thread (never re-enter the library from its own callback) but a NEW
+        // recorder must not be built until it has FINISHED. before: the old one was disposed fire-and-forget while the
+        // next started — two WGC sessions + two AMD hardware encoders created/destroyed side by side on every focus
+        // switch / rotation, and a late frame landing in a recorder mid-dispose. Crash dumps (2026-10-21/22) showed
+        // exactly that overlap: an exception escaping ScreenRecorderLib's frame-arrived handler, and heap corruption
+        // detected inside amdh264enc64 — the "app closes on its own after a couple of hours" report.
+        private static readonly object _disposeLock = new();
+        private static Task _pendingDispose = Task.CompletedTask;
+        private static void WaitForPendingDispose()
+        {
+            Task t; lock (_disposeLock) t = _pendingDispose;
+            try { if (!t.Wait(8000)) DiagLog.Line("CLIP", "previous recorder still tearing down after 8 s — starting anyway"); } catch { }
         }
 
         // Translate the user's capture settings → ScreenRecorderLib RecorderOptions (WGC + hardware H.264).
@@ -748,6 +763,9 @@ namespace SpartaClips
                 var cls = new System.Text.StringBuilder(64); GetClassName(h, cls, cls.Capacity);
                 string c = cls.ToString();
                 if (c == "Shell_TrayWnd" || c == "Shell_SecondaryTrayWnd" || c == "Progman" || c == "WorkerW" || c == "Windows.UI.Core.CoreWindow") return false;
+                // Console / terminal windows are never games — and are often short-lived (a tool's console that closes
+                // seconds later, under a live capture: the last thing followed before a crash, 2026-10-21).
+                if (c == "ConsoleWindowClass" || c == "CASCADIA_HOSTING_WINDOW_CLASS" || c == "PseudoConsoleWindow") return false;
                 // Only real app windows (what the taskbar would show). Transient overlays were followed and then vanished
                 // under the recorder — "replay segment failed: The parameter is incorrect" after following the
                 // "Snipping Tool Overlay" (measured in the log). Tool windows, owned popups/dialogs, cloaked (other
@@ -773,6 +791,16 @@ namespace SpartaClips
             try { using var pr = System.Diagnostics.Process.GetProcessById((int)id); return Array.IndexOf(SHELL_PROCS, pr.ProcessName) >= 0; }
             catch { return false; }
         });
+        // ScreenRecorderLib 7.x: audio sources are explicit (6.x defaulted to system loopback via IsOutputDeviceEnabled).
+        // 7.x leaks ~5x fewer handles per recorder than 6.6.0 (measured: ~20 -> ~3-4 per create/record/dispose) and
+        // made its recording state thread-safe — both matter because the replay buffer builds a recorder per segment.
+        private static AudioOptions BuildAudioOptions()
+        {
+            var a = new AudioOptions { IsAudioEnabled = true };
+            a.AudioSources.Add(LoopbackAudioSource.Default);                        // system / game audio (default output device)
+            if (_mic && !_sepMic) a.AudioSources.Add(CaptureAudioSource.Default);   // mic mixed into the MP4 only when NOT a separate track
+            return a;
+        }
         private static int _capH;   // height of the window being captured (0 = display mode / unknown) — feeds EffectiveMbps
         private static RecorderOptions BuildOptions()
         {
@@ -786,12 +814,7 @@ namespace SpartaClips
                     IsHardwareEncodingEnabled = !_forceSwEncode,   // software fallback after a hardware-encode failure
                     IsMp4FastStartEnabled = true,
                 },
-                AudioOptions = new AudioOptions
-                {
-                    IsAudioEnabled = true,
-                    IsOutputDeviceEnabled = true,        // system / game audio
-                    IsInputDeviceEnabled = _mic && !_sepMic,   // mic mixed into the MP4 only when NOT a separate track
-                },
+                AudioOptions = BuildAudioOptions(),
             };
             // VBR targeting the (resolution-scaled) bitrate — so the bitrate dropdown AND the resolution both control
             // file size predictably, and the size estimate matches. (Constant-Quality ignored the bitrate, which is why
@@ -1113,6 +1136,7 @@ namespace SpartaClips
             _bufCur = Path.Combine(BufferDir, "seg_" + DateTime.Now.Ticks + ".mp4");
             _segDone = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var tcs = _segDone; string p = _bufCur;
+            WaitForPendingDispose();
             var rec = Recorder.CreateRecorder(BuildOptions());
             SyncGameRing();
             if (_chat && !_chatSide.RingActive) _chatSide.StartRing(GameRingSeconds);   // chat app (e.g. Discord) opened after arming
@@ -1150,15 +1174,24 @@ namespace SpartaClips
             finally { _repGate.Release(); }
         }
 
+        private static readonly TimeSpan MinSegmentAge = TimeSpan.FromMilliseconds(1500);
         // Stop the current segment and await its finalized file (caller holds _repGate). Returns the path or null.
         private static async Task<string?> StopSegmentAsync()
         {
             var rec = _repRec; var tcs = _segDone; _repRec = null; _segDone = null;
             if (rec == null || tcs == null) return null;
+            // Never stop a recorder that's still starting up: ScreenRecorderLib stopped within its first few hundred ms
+            // leaks most of its capture/encoder resources (measured: ~60 handles per session at 300 ms vs ~4 at 600+ ms)
+            // — rapid focus switching / a save right after a roll hit exactly that window, segment after segment.
+            if (_segStart.TryGetValue(_bufCur, out var started))
+            {
+                var age = DateTime.UtcNow - started;
+                if (age < MinSegmentAge) await Task.Delay(MinSegmentAge - age).ConfigureAwait(false);
+            }
             string path;
             try { rec.Stop(); path = await tcs.Task.ConfigureAwait(false); }
             catch { path = _bufCur; }
-            finally { _ = Task.Run(() => { try { rec.Dispose(); } catch { } }); }
+            finally { DisposeRec(rec); }   // the next StartSegment waits for this to finish
             return path;
         }
 

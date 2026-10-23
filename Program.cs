@@ -9,6 +9,8 @@ namespace SpartaClips
 {
     internal static class Program
     {
+        public const string InstanceMutexName = @"Local\SpartaClips.SingleInstance";
+
         [STAThread]
         static void Main(string[] args)
         {
@@ -21,9 +23,14 @@ namespace SpartaClips
             if (Array.Exists(args, a => string.Equals(a, "--uninstall-elevated-task", StringComparison.OrdinalIgnoreCase)))
             { Environment.Exit(ElevatedTask.Uninstall() ? 0 : 1); return; }
 
+            // Crash watchdog (see Watchdog.cs): a tiny copy of the app that restarts it if it dies without a deliberate
+            // quit. Runs BEFORE the single-instance mutex — it must never hold it (that's how it tells instances apart).
+            int wd = Array.FindIndex(args, a => string.Equals(a, "--watchdog", StringComparison.OrdinalIgnoreCase));
+            if (wd >= 0) { if (wd + 1 < args.Length && int.TryParse(args[wd + 1], out int wpid)) Watchdog.Run(wpid); return; }
+
             bool startHidden = Array.Exists(args, a => string.Equals(a, "--tray", StringComparison.OrdinalIgnoreCase));
 
-            using var instanceLock = new Mutex(true, @"Local\SpartaClips.SingleInstance", out bool firstInstance);
+            using var instanceLock = new Mutex(true, InstanceMutexName, out bool firstInstance);
             using var showSignal = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\SpartaClips.ShowWindow");
             if (!firstInstance)
             {
@@ -45,6 +52,7 @@ namespace SpartaClips
             System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (s, e) => { try { DiagLog.Crash("CRASH", "unobserved task exception:\n" + e.Exception); e.SetObserved(); } catch { } };
 
             try { DiagLog.Mark("App start"); } catch { }
+            Watchdog.Start();
             System.Threading.Tasks.Task.Run(TempMaintenance.SweepStartup);   // clear last session's transient temp + age-prune caches, off the startup path
             var ctx = new TrayCore(startHidden);
             var waker = new Thread(() =>

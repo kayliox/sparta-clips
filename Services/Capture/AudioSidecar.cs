@@ -86,8 +86,9 @@ namespace SpartaClips
                         try { WritePcm16(fmt, a.Buffer, a.BytesRecorded, b => _writer!.WriteByte(b), (buf, off, cnt) => _writer!.Write(buf, off, cnt)); } catch { }
                     }
                 };
-                _cap.RecordingStopped += (s, a) => { var c = _cap; _cap = null; try { c?.Dispose(); } catch { } };
-                _cap.StartRecording();
+                var cap = _cap;   // each capture's stop disposes only ITSELF — never a newer capture (see StartRing)
+                cap.RecordingStopped += (s, a) => { System.Threading.Interlocked.CompareExchange(ref _cap, null, cap); try { cap.Dispose(); } catch { } };
+                cap.StartRecording();
                 DiagLog.Line("CLIP", _tag + " sidecar -> " + Path.GetFileName(_path));
             }
             catch (Exception ex) { DiagLog.Line("CLIP", _tag + " sidecar err: " + ex.Message); try { OnFail?.Invoke(_tag); } catch { } StopSidecar(false); }
@@ -115,21 +116,24 @@ namespace SpartaClips
             StopRing();   // never leave a previous capture running — two captures feeding one ring doubled the audio
             try
             {
-                _ringCap = MakeCapture();
-                if (_ringCap == null) return;
-                var fmt = _ringCap.WaveFormat;
+                var cap = MakeCapture();
+                _ringCap = cap;
+                if (cap == null) return;
+                var fmt = cap.WaveFormat;
                 _rate = fmt.SampleRate; _ch = fmt.Channels;
                 lock (_ringLock) { _ring = new byte[Math.Max(1, _rate * _ch * 2 * Math.Max(seconds, 1))]; _ringPos = 0; _ringFilled = 0; }
-                _ringCap.DataAvailable += (s, a) =>
+                cap.DataAvailable += (s, a) =>
                 {
                     lock (_ringLock)
                     {
-                        if (_ring == null) return;
+                        if (_ring == null || !ReferenceEquals(_ringCap, cap)) return;   // a stopping capture's late data stays out of the new ring
                         WritePcm16(fmt, a.Buffer, a.BytesRecorded, RingByte, (buf, off, cnt) => { for (int i = 0; i < cnt; i++) RingByte(buf[off + i]); });
                     }
                 };
-                _ringCap.RecordingStopped += (s, a) => { var c = _ringCap; _ringCap = null; try { c?.Dispose(); } catch { } };
-                _ringCap.StartRecording();
+                // before: "var c = _ringCap; _ringCap = null; c.Dispose()" — when the OLD capture's stop arrived after
+                // StartRing had already installed a NEW one, it disposed the new capture while it was starting.
+                cap.RecordingStopped += (s, a) => { System.Threading.Interlocked.CompareExchange(ref _ringCap, null, cap); try { cap.Dispose(); } catch { } };
+                cap.StartRecording();
                 DiagLog.Line("CLIP", _tag + " ring on (" + seconds + "s)");
             }
             catch (Exception ex) { DiagLog.Line("CLIP", _tag + " ring err: " + ex.Message); StopRing(); }

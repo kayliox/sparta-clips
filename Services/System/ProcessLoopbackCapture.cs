@@ -37,6 +37,7 @@ namespace SpartaClips
             IntPtr blob = Marshal.AllocHGlobal(12);
             IntPtr pv = Marshal.AllocHGlobal(24);
             IntPtr fmt = IntPtr.Zero;
+            IActivateAudioInterfaceAsyncOperation? asyncOp = null; Handler? handler = null;
             try
             {
                 Marshal.WriteInt32(blob, 0, 1);   // AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK = 1 (NOT 2!)
@@ -47,9 +48,9 @@ namespace SpartaClips
                 Marshal.WriteInt32(pv, 8, 12);             // blob.cbSize
                 Marshal.WriteInt64(pv, 16, blob.ToInt64()); // blob.pBlobData
 
-                var handler = new Handler();
+                handler = new Handler();
                 Guid iid = typeof(IAudioClient).GUID;
-                int hr = ActivateAudioInterfaceAsync("VAD\\Process_Loopback", ref iid, pv, handler, out _);
+                int hr = ActivateAudioInterfaceAsync("VAD\\Process_Loopback", ref iid, pv, handler, out asyncOp);
                 if (hr < 0) throw new COMException("ActivateAudioInterfaceAsync", hr);
                 if (!handler.Done.Wait(3000) || handler.Op == null) throw new TimeoutException("audio activation");
                 handler.Op.GetActivateResult(out int ahr, out object unk);
@@ -88,6 +89,12 @@ namespace SpartaClips
             catch { _event.Dispose(); throw; }
             finally
             {
+                // The activation's async-operation object (returned AND handed to the completion handler) holds the
+                // activation — and its device handles — until released. Never released before: ~5 handles leaked per
+                // per-app capture, i.e. per focus switch (measured with a handle census, 2026-10-23).
+                try { if (asyncOp != null) Marshal.FinalReleaseComObject(asyncOp); } catch { }
+                try { if (handler?.Op != null && !ReferenceEquals(handler.Op, asyncOp)) Marshal.FinalReleaseComObject(handler.Op); } catch { }
+                if (handler != null) handler.Op = null;
                 if (fmt != IntPtr.Zero) Marshal.FreeHGlobal(fmt);
                 Marshal.FreeHGlobal(pv);
                 Marshal.FreeHGlobal(blob);
@@ -136,13 +143,33 @@ namespace SpartaClips
             }
             _run = false;
             try { Stopped?.Invoke(); } catch { }
+            bool release; lock (_life) { _loopExited = true; release = _releaseOnExit; }
+            if (release) ReleaseNative();   // Dispose ran while we were still inside a callback — finish it here
         }
 
+        // Dispose is called from two places that race: the owner (StopRecording, any thread) AND — via Stopped →
+        // RecordingStopped → the owner's handler — the loop thread itself. before: both ran the teardown, and the
+        // outer one gave the loop only 500 ms before freeing the COM objects it might still be using. after: one
+        // teardown, and the native objects are released only once the loop thread has really exited (by the loop
+        // thread itself when it's still inside a callback). Never free audio buffers under a running GetBuffer.
+        private int _disposed, _released;
+        private readonly object _life = new();
+        private bool _loopExited, _releaseOnExit;
         public void Dispose()
         {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
             _run = false;
             try { _event.Set(); } catch { }
-            try { _thread?.Join(500); } catch { }   // loop thread is gone before we touch the COM objects below
+            var t = _thread;
+            bool releaseNow;
+            if (t == null) releaseNow = true;                                         // never started
+            else if (t != Thread.CurrentThread && t.Join(3000)) releaseNow = true;    // loop gone
+            else lock (_life) { releaseNow = _loopExited; if (!releaseNow) _releaseOnExit = true; }   // loop still busy / it's us
+            if (releaseNow) ReleaseNative();
+        }
+        private void ReleaseNative()
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0) return;
             try { _client.Stop(); } catch { }
             try { _client.Reset(); } catch { }
             // Release the WASAPI RCWs explicitly: without this, each per-app source switch (rebuild) leaked an

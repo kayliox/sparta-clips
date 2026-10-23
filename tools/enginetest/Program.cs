@@ -106,14 +106,24 @@ else Skip("G. share leaves a muted chat track out", "no ffmpeg");
 if (haveFf)
 {
     string prev = Path.Combine(tmp, "h_prev.mp4"), cur = Path.Combine(tmp, "h_cur.mp4"), dst = Path.Combine(tmp, "h_replay.mp4"), png = Path.Combine(tmp, "h.png");
-    Ffmpeg($"-f lavfi -i color=c=green:s=1920x1080:r=30:d=30 -f lavfi -i sine=f=440:r=48000:d=30 -ac 2 -c:v libx264 -preset ultrafast -c:a aac -shortest \"{prev}\"");
+    // prev at 4 fps = a mostly-static captured window (WGC delivers few frames): the join must NOT drag the game part down to it
+    Ffmpeg($"-f lavfi -i color=c=green:s=1920x1080:r=4:d=30 -f lavfi -i sine=f=440:r=48000:d=30 -ac 2 -c:v libx264 -preset ultrafast -c:a aac -shortest \"{prev}\"");
     Ffmpeg($"-f lavfi -i color=c=blue:s=3440x1440:r=30:d=10 -f lavfi -i sine=f=880:r=48000:d=10 -ac 2 -c:v libx264 -preset ultrafast -c:a aac -shortest \"{cur}\"");
     bool joined = ((Task<bool>)Call(ffm, "ConcatLastSecondsAsync", prev, cur, 30, dst, 0.0)).GetAwaiter().GetResult();
     double len = joined ? (double)Call(T("ClipLibrary"), "Mp4DurationSeconds", dst) : 0;
     Ffmpeg($"-ss 5 -i \"{dst}\" -frames:v 1 \"{png}\"");
     bool bars = false; int width = 0;
     if (File.Exists(png)) using (var bmp = new System.Drawing.Bitmap(png)) { width = bmp.Width; var bar = bmp.GetPixel(200, bmp.Height / 2); var pic = bmp.GetPixel(bmp.Width / 2, bmp.Height / 2); bars = bar.G < 20 && pic.G > 100; }
-    Check("H. window-switch replay joined (full length, letterboxed)", joined && Math.Abs(len - 30) < 0.6 && width == 3440 && bars, $"joined={joined} length={len:F1}s width={width} letterboxed={bars}");
+    int frames = 0;
+    if (joined)
+    {
+        var pr = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Path.Combine(Path.GetDirectoryName(ff)!, "ffprobe.exe"),
+            $"-v error -select_streams v -count_packets -show_entries stream=nb_read_packets -of csv=p=0 \"{dst}\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true });
+        int.TryParse(pr.StandardOutput.ReadToEnd().Trim().TrimEnd(','), out frames); pr.WaitForExit();
+    }
+    // 30 s at the newest segment's 30 fps ~= 900 frames (the slow 4 fps earlier part is repeated up, never the other way)
+    Check("H. window-switch replay joined (full length, letterboxed, keeps the frame rate)", joined && Math.Abs(len - 30) < 0.6 && width == 3440 && bars && frames > 850,
+        $"joined={joined} length={len:F1}s width={width} letterboxed={bars} frames={frames} (want ~900)");
 }
 else Skip("H. window-switch replay joined", "no ffmpeg");
 
