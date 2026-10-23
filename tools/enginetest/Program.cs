@@ -93,7 +93,7 @@ if (haveFf)
     double Shared(bool chatOn)
     {
         var mix = Activator.CreateInstance(mixT); mixT.GetField("chatOn").SetValue(mix, chatOn);
-        var t = (Task<string>)Call(share, "RenderAsync", "g.mp4", "g_share_" + chatOn, 0, 0, 0.0, 0.0, 4.0, null, mix);
+        var t = (Task<string>)Call(share, "RenderAsync", "g.mp4", "g_share_" + chatOn, 0, 0, 0.0, 0.0, 4.0, null, mix, CancellationToken.None);
         string p = t.GetAwaiter().GetResult(); double v = p == null ? 999 : MaxVolume(p); try { if (p != null) File.Delete(p); } catch { }
         return v;
     }
