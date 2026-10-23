@@ -289,6 +289,10 @@ namespace SpartaClips
                 inputIdx = AppendTrack(sb, mixLabels, ref extraInputs, chatOn, chatWav, vidIn, vidOut, chatIn, chatOut, chatOffset, chatVol, inputIdx, "ca");
 
                 string venc = videoArgs ?? "-c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p";   // share passes copy / high-quality args
+                // Re-encoding → decode on the GPU via D3D11VA (frames back to system memory; software fallback is automatic).
+                // Explicit d3d11va — -hwaccel auto didn't pick the fast decoder (40 s vs 12 s on the same clip).
+                // Saved clips are AV1: a software decode of a 3440x1440 clip took 48 s of a 60 s clip (measured 2026-10-23).
+                string dec = venc.Contains("-c:v copy") ? "" : "-hwaccel d3d11va ";
                 string args;
                 if (mixLabels.Count > 1)
                 {
@@ -296,11 +300,11 @@ namespace SpartaClips
                     // A brickwall limiter catches the case where game audio + voice sum past 0 dBFS — otherwise the AAC
                     // buffer hard-clips (harsh highs, "compressed" sound). Transparent when the mix isn't hot.
                     sb.Append(string.Join("", mixLabels.ConvertAll(l => "[" + l + "]")) + $"amix=inputs={mixLabels.Count}:normalize=0,alimiter=limit=0.95[aout]");
-                    args = $"-nostdin -y -hide_banner -loglevel error -ss {F(vidIn)} -i \"{src}\"{extraInputs} -t {F(dur)} -filter_complex \"{sb}\" -map 0:v:0 -map \"[aout]\" {venc} -c:a aac -b:a 192k -movflags +faststart \"{tmp}\"";
+                    args = $"-nostdin -y -hide_banner -loglevel error {dec}-ss {F(vidIn)} -i \"{src}\"{extraInputs} -t {F(dur)} -filter_complex \"{sb}\" -map 0:v:0 -map \"[aout]\" {venc} -c:a aac -b:a 192k -movflags +faststart \"{tmp}\"";
                 }
                 else   // no sidecars overlap → just the (volume-adjusted) clip audio
                 {
-                    args = $"-nostdin -y -hide_banner -loglevel error -ss {F(vidIn)} -i \"{src}\" -t {F(dur)} -af volume={F(vidVol)} -map 0:v:0 -map 0:a:0? {venc} -c:a aac -b:a 192k -movflags +faststart \"{tmp}\"";
+                    args = $"-nostdin -y -hide_banner -loglevel error {dec}-ss {F(vidIn)} -i \"{src}\" -t {F(dur)} -af volume={F(vidVol)} -map 0:v:0 -map 0:a:0? {venc} -c:a aac -b:a 192k -movflags +faststart \"{tmp}\"";
                 }
                 bool ok = await RunAsync(ff, args, tmp);
                 return ok && Finalize(tmp, destPath);
@@ -692,6 +696,11 @@ namespace SpartaClips
         public static IDisposable UserWaiting() { bool prev = _userWaiting.Value; _userWaiting.Value = true; return new WaitScope(prev); }
         private sealed class WaitScope : IDisposable { private readonly bool _prev; public WaitScope(bool prev) => _prev = prev; public void Dispose() => _userWaiting.Value = _prev; }
 
+        // Cancellation scope (AsyncLocal → flows through every await): a cancelled share kills its running ffmpeg at once.
+        private static readonly System.Threading.AsyncLocal<System.Threading.CancellationToken> _cancel = new();
+        public static IDisposable CancelWith(System.Threading.CancellationToken ct) { var prev = _cancel.Value; _cancel.Value = ct; return new CancelScope(prev); }
+        private sealed class CancelScope : IDisposable { private readonly System.Threading.CancellationToken _prev; public CancelScope(System.Threading.CancellationToken prev) => _prev = prev; public void Dispose() => _cancel.Value = _prev; }
+
         private static async Task<bool> RunAsync(string ff, string args, string dst)
         {
             try
@@ -699,6 +708,8 @@ namespace SpartaClips
                 var psi = new ProcessStartInfo(ff, args) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
                 using var p = Process.Start(psi); if (p == null) return false;
                 if (!_userWaiting.Value) try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }   // background: never starve the game / WebView2 renderer
+                var ct = _cancel.Value;
+                using var killOnCancel = ct.CanBeCanceled ? ct.Register(() => { try { if (!p.HasExited) p.Kill(true); } catch { } }) : default;
                 string err = await p.StandardError.ReadToEndAsync();
                 await p.WaitForExitAsync();
                 bool ok = p.ExitCode == 0 && File.Exists(dst) && new FileInfo(dst).Length > 0;

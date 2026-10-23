@@ -27,12 +27,17 @@ namespace SpartaClips
         }
 
         public static async Task<string?> RenderAsync(string clipName, string outName, int tierMb, int fps,
-            double vidIn, double vidOut, double durSec, Action<string, int>? progress = null, Mix? mix = null)
+            double vidIn, double vidOut, double durSec, Action<string, int>? progress = null, Mix? mix = null,
+            System.Threading.CancellationToken ct = default)
         {
             using var _uw = ClipFfmpeg.UserWaiting();   // the user is watching a progress bar: run ffmpeg at normal priority
+            using var _cw = ClipFfmpeg.CancelWith(ct);   // a newer tier/fps pick (or closing the popup) kills this render's ffmpeg
             mix ??= new Mix();
             string comp = "";
-            await _renderGate.WaitAsync();   // serialize renders so overlapping tier/fps changes can't clobber the fixed temp files
+            // Renders are serialized (fixed temp files) — a superseded one is CANCELLED, so the newest never waits behind it.
+            // before: picking 100 MB then 500 MB queued the 500 MB render behind the whole 100 MB encode while the popup sat
+            // at "10%" (the older render's progress is hidden once it's stale).
+            try { await _renderGate.WaitAsync(ct); } catch (OperationCanceledException) { return null; }
             try
             {
                 if (!await ClipFfmpeg.EnsureAsync()) return null;
@@ -81,6 +86,7 @@ namespace SpartaClips
                     }
                     source = comp;
                 }
+                if (ct.IsCancellationRequested) return null;
 
                 // 2) Compress-to-tier / fps. Original + native fps + already-fits → just copy the source to the named file.
                 long size = new FileInfo(source).Length;
@@ -90,7 +96,7 @@ namespace SpartaClips
                 progress?.Invoke("render", 50);
                 var filters = new System.Collections.Generic.List<string>();
                 if (fpsChange) filters.Add($"fps={fps}");
-                string venc; long kb = 0; string hw = "";
+                string venc; long kb = 0; string hw = ""; int scaleH = 0;
                 if (tierMb > 0)
                 {
                     double budget = tierMb * 8.0 * 1024 * 1024 * 0.95;                 // bits, with a 5% safety margin
@@ -99,6 +105,7 @@ namespace SpartaClips
                     // Small tiers: squeezing 3440x1440 into ~1 Mbps is mush. Drop to the resolution the budget can
                     // actually feed (~0.07 bits/pixel/frame = clean H.264) — 500 MB (Nitro) shares stay native.
                     int h = ShareHeight(vbps, srcW, srcH, fpsChange ? fps : (nativeFps > 1 ? nativeFps : 30));
+                    scaleH = h;
                     if (h > 0) { filters.Add($"scale=-2:{h}:flags=lanczos"); DiagLog.Line("SHARE", $"tier {tierMb} MB: {srcW}x{srcH} -> {h}p @ {kb} kbps"); }
                     // GPU only for the heavy high-res encodes (where x264 would take minutes). Small tiers stay on x264:
                     // it's quick at <=900p AND hits the size target — AMF's VBR landed a 10 MB share at 5.1 MB (measured).
@@ -108,17 +115,34 @@ namespace SpartaClips
                 else venc = "-c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p";   // Original tier, but fps forced a re-encode
                 string vf = filters.Count > 0 ? "-vf \"" + string.Join(",", filters) + "\" " : "";
 
-                string Args(string v) => $"-nostdin -y -hide_banner -loglevel error -nostats -progress pipe:1 -i \"{source}\" {vf}{v} -c:a aac -b:a 160k -movflags +faststart \"{dst}\"";
+                // Decode on the GPU (D3D11VA, frames back to system memory; ffmpeg falls back to software if the GPU can't). NOT
+                // -hwaccel auto: it didn't pick the fast decoder here (40 s vs 12 s for the same clip). Saved clips are
+                // AV1 — a software decode of a 3456x1456 clip took 48 s of a 60 s share on a high-end PC (measured).
+                string Args(string v) => $"-nostdin -y -hide_banner -loglevel error -nostats -progress pipe:1 -hwaccel d3d11va -i \"{source}\" {vf}{v} -c:a aac -b:a 160k -movflags +faststart \"{dst}\"";
                 Action<double>? onFrac = progress == null ? null : f => progress("render", 50 + (int)(f * 49));
-                bool ok = await RunFfmpeg(ff, Args(venc), onFrac, outDur);
-                if (!ok && hw.Length > 0) { DiagLog.Line("SHARE", hw + " failed -> libx264"); hw = ""; ok = await RunFfmpeg(ff, Args(EncArgs("", kb)), onFrac, outDur); }
+                bool ok = false;
+                // AMD: the whole chain on the GPU — D3D11 decode → vpp_amf scale → AMF encode, frames never touch the CPU.
+                // 100 MB tier of a 60 s 3456x1456 AV1 replay: 44.6 s → 9.8 s (measured 2026-10-23). Any failure falls back below.
+                if (hw == "h264_amf")
+                {
+                    var gf = new System.Collections.Generic.List<string>();
+                    if (fpsChange) gf.Add($"fps={fps}");
+                    if (scaleH > 0) { int w = (int)Math.Round((double)srcW * scaleH / Math.Max(1, srcH) / 2) * 2; gf.Add($"vpp_amf=w={w}:h={scaleH}:scale_type=bicubic"); }
+                    string gvf = gf.Count > 0 ? "-vf \"" + string.Join(",", gf) + "\" " : "";
+                    string gpu = $"-nostdin -y -hide_banner -loglevel error -nostats -progress pipe:1 -hwaccel d3d11va -hwaccel_output_format d3d11 -i \"{source}\" {gvf}{EncArgs(hw, kb).Replace(" -pix_fmt yuv420p", "")} -c:a aac -b:a 160k -movflags +faststart \"{dst}\"";
+                    ok = await RunFfmpeg(ff, gpu, onFrac, outDur, ct);
+                    if (!ok && !ct.IsCancellationRequested) DiagLog.Line("SHARE", "GPU pipeline failed -> CPU scale");
+                }
+                if (!ok && !ct.IsCancellationRequested) ok = await RunFfmpeg(ff, Args(venc), onFrac, outDur, ct);
+                if (!ok && hw.Length > 0 && !ct.IsCancellationRequested) { DiagLog.Line("SHARE", hw + " failed -> libx264"); hw = ""; ok = await RunFfmpeg(ff, Args(EncArgs("", kb)), onFrac, outDur, ct); }
+                if (ct.IsCancellationRequested) return null;
                 // Hardware rate control can overshoot on short clips — a file over the tier is one Discord rejects, so
                 // redo it with libx264 (tight ABR) a notch lower rather than hand over an unusable share.
                 long limit = tierMb > 0 ? tierMb * 1024L * 1024L : long.MaxValue;
                 if (ok && File.Exists(dst) && new FileInfo(dst).Length > limit)
                 {
                     DiagLog.Line("SHARE", $"{(hw.Length > 0 ? hw : "x264")} overshot {tierMb} MB ({new FileInfo(dst).Length / 1048576.0:F1} MB) -> libx264 retry");
-                    ok = await RunFfmpeg(ff, Args(EncArgs("", (long)(kb * 0.88))), onFrac, outDur);
+                    ok = await RunFfmpeg(ff, Args(EncArgs("", (long)(kb * 0.88))), onFrac, outDur, ct);
                 }
                 return (ok && File.Exists(dst) && new FileInfo(dst).Length <= limit) ? dst : null;
             }
@@ -156,12 +180,15 @@ namespace SpartaClips
             };
         }
 
-        private static async Task<bool> RunFfmpeg(string ff, string args, Action<double>? onFrac = null, double durSec = 0)
+        private static async Task<bool> RunFfmpeg(string ff, string args, Action<double>? onFrac = null, double durSec = 0,
+            System.Threading.CancellationToken ct = default)
         {
+            if (ct.IsCancellationRequested) return false;
             try
             {
                 var psi = new System.Diagnostics.ProcessStartInfo(ff, args) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true };
                 using var p = System.Diagnostics.Process.Start(psi); if (p == null) return false;
+                using var killOnCancel = ct.CanBeCanceled ? ct.Register(() => { try { if (!p.HasExited) p.Kill(true); } catch { } }) : default;
                 var errTask = p.StandardError.ReadToEndAsync();
                 if (onFrac == null) await p.StandardOutput.ReadToEndAsync();   // -progress output nobody wants — drain so it can't block
                 else
@@ -177,6 +204,7 @@ namespace SpartaClips
                 }
                 string err = await errTask;
                 await p.WaitForExitAsync();
+                if (ct.IsCancellationRequested) return false;
                 if (p.ExitCode != 0) DiagLog.Line("SHARE", "ffmpeg " + p.ExitCode + ": " + (err.Length > 180 ? err.Substring(0, 180) : err));
                 return p.ExitCode == 0;
             }

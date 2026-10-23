@@ -26,11 +26,15 @@ namespace SpartaClips
         // ── SteelSeries-style drag-out: render the file ahead of time, then a native window over the popup's drag box
         //    starts a real OS file drag into Discord (see MainForm.DragShare). Render → window.onShareRendered(ok). ──
         private static int _shareReqSeq;   // only the LATEST tier/fps render arms the drag file (older passes are ignored)
+        private static System.Threading.CancellationTokenSource? _shareCts;   // the in-flight render — cancelled by the next one
+        public void CancelShareRender() { try { System.Threading.Interlocked.Exchange(ref _shareCts, null)?.Cancel(); } catch { } }
         public void RenderShareForDrag(string clipName, string outName, int tierMb, int fps, double vidIn, double vidOut, double durSec, string mixJson)
         {
             ClipShare.Mix? mix = null;
             try { if (!string.IsNullOrWhiteSpace(mixJson)) mix = JsonConvert.DeserializeObject<ClipShare.Mix>(mixJson); } catch { }
             int myReq = System.Threading.Interlocked.Increment(ref _shareReqSeq);
+            var cts = new System.Threading.CancellationTokenSource();
+            try { System.Threading.Interlocked.Exchange(ref _shareCts, cts)?.Cancel(); } catch { }   // kill the superseded render's ffmpeg now
             bool Latest() => myReq == System.Threading.Volatile.Read(ref _shareReqSeq);
             _form?.SetDragSharePath("");   // a render is starting → nothing to drag yet
             Task.Run(async () =>
@@ -39,7 +43,7 @@ namespace SpartaClips
                 {
                     PostToWeb("window.onShare && window.onShare(\"render\",10," + JsonConvert.SerializeObject(clipName) + ")");
                     string? path = await ClipShare.RenderAsync(clipName, outName, tierMb, fps, vidIn, vidOut, durSec,
-                        (stage, pct) => { if (Latest()) PostToWeb("window.onShare && window.onShare(" + JsonConvert.SerializeObject(stage) + "," + pct + "," + JsonConvert.SerializeObject(clipName) + ")"); }, mix);
+                        (stage, pct) => { if (Latest()) PostToWeb("window.onShare && window.onShare(" + JsonConvert.SerializeObject(stage) + "," + pct + "," + JsonConvert.SerializeObject(clipName) + ")"); }, mix, cts.Token);
                     if (!Latest()) return;   // a newer render superseded this one → don't arm the stale file
                     long bytes = 0; try { if (path != null && System.IO.File.Exists(path)) bytes = new System.IO.FileInfo(path).Length; } catch { }
                     _form?.SetDragSharePath(path ?? "");

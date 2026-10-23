@@ -108,6 +108,7 @@
       renderShareForDrag: (n, outName, mb, fps, i, o, d, mix) => call(b => b.RenderShareForDrag(String(n||""), String(outName||""), mb|0, fps|0, +i||0, +o||0, +d||0, String(mix||""))),
       shareDragArm:     (json)       => call(b => b.ShareDragArm(String(json || "{}"))),
       shareDragDisarm:  ()           => call(b => b.ShareDragDisarm()),
+      cancelShareRender: ()          => call(b => b.CancelShareRender()),
     };
   })();
 
@@ -1277,7 +1278,7 @@
     setShareStatus(""); const p = $("#sharePopup"); if (p) { if (p.parentNode !== document.body) document.body.appendChild(p); p.hidden = false; }
     scheduleShareRender();   // no overlay to hide — the in-page <video> sits under the share sheet's z-index naturally
   }
-  function closeSharePopup() { const p = $("#sharePopup"); if (p) p.hidden = true; clearTimeout(_shareRenderT); try { clipsNative.shareDragDisarm(); } catch {} }
+  function closeSharePopup() { const p = $("#sharePopup"); if (p) p.hidden = true; clearTimeout(_shareRenderT); try { clipsNative.shareDragDisarm(); clipsNative.cancelShareRender(); } catch {} }
   function setShareStatus(t, tone) { const s = $("#shareStatus"); if (!s) return; s.hidden = !t; s.textContent = t || ""; s.classList.toggle("note", tone === "note"); }
   function renderShareSeg(sel, items, cur, onPick) {
     const host = $(sel); if (!host) return;
