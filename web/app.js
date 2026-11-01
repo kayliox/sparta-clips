@@ -1108,19 +1108,23 @@
     for (const s of [24, 25, 30, 48, 50, 60, 72, 90, 100, 120, 144, 165, 240, 360]) { const d = Math.abs(n - s); if (d < bd) { bd = d; best = s; } }
     return bd <= best * 0.12 ? best : Math.round(n);
   }
-  function techHTML(info) {
-    if (!info) return "";
+  // Tech chips on a gallery card: resolution · fps · codec (from the async ffprobe info) + the file size (known from the
+  // list immediately, so it shows even before the probe lands).
+  function techHTML(info, name) {
+    const c = name != null ? _clips.find(x => x.name === name) : null;
+    const size = c && c.size ? clipBytes(c.size) : "";
+    if (!info) return size ? `<span class="gal-tech-chip">${esc(size)}</span>` : "";
     const cmap = { hevc: "H.265", h264: "H.264", av1: "AV1" };
     const res = info.height ? (info.height >= 4320 ? "8K" : info.height >= 2160 ? "4K" : info.height + "p") : "";
     const fps = info.fps ? snapFps(info.fps) + " FPS" : "";
     const codec = info.codec ? (cmap[info.codec] || String(info.codec).toUpperCase()) : "";
-    return [res, fps, codec].filter(Boolean).map(t => `<span class="gal-tech-chip">${esc(t)}</span>`).join("");
+    return [res, fps, codec, size].filter(Boolean).map(t => `<span class="gal-tech-chip">${esc(t)}</span>`).join("");
   }
   window.onClipInfo = (name, info) => {
     try {
       if (!info) { _infoReq.delete(name); return; }
       infoMem[name] = info;
-      { const card = document.querySelector('.gal-card[data-name="' + escSel(name) + '"]'); if (card) { const el = card.querySelector("[data-tech]"); if (el) el.innerHTML = techHTML(info); } }
+      { const card = document.querySelector('.gal-card[data-name="' + escSel(name) + '"]'); if (card) { const el = card.querySelector("[data-tech]"); if (el) el.innerHTML = techHTML(info, name); } }
       if (name === _clipName && info.width > 0 && info.height > 0) _clipAR = info.width / info.height;   // <video> letterboxes via object-fit
       if (name === _clipName) {
         updateHevcWarn();
@@ -1232,7 +1236,7 @@
     return `<div class="gal-card${sel}" data-name="${esc(c.name)}" title="${esc(c.name)}" tabindex="0" role="button" aria-label="Open ${esc(p.game || c.name)}">
       <span class="gal-tick" aria-hidden="true">✓</span>
       <div class="gal-thumb"><img class="gal-thumb-img" alt="" loading="lazy"${t ? ` src="${esc(t)}"` : ""}><span class="gal-play">▶</span><button class="gal-more" data-name="${esc(c.name)}" title="More actions" aria-label="More actions"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button>${editedBadge}${dur}</div>
-      <div class="gal-meta"><div class="gal-name">${esc(p.game || c.name)}</div><div class="gal-sub">${chip}<span class="gal-when">${when}</span></div><div class="gal-tech" data-tech>${infoMem[c.name] ? techHTML(infoMem[c.name]) : ""}</div></div>
+      <div class="gal-meta"><div class="gal-name">${esc(p.game || c.name)}</div><div class="gal-sub">${chip}<span class="gal-when">${when}</span></div><div class="gal-tech" data-tech>${techHTML(infoMem[c.name], c.name)}</div></div>
     </div>`;
   }
   // ── Share to Discord ──
