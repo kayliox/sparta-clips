@@ -179,16 +179,20 @@ input[type=checkbox]{accent-color:var(--accent)}
 /* No resting box — just the icon; hover reveals a circular frosted highlight that gently pops (close keeps red hover). */
 .win-btn{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;border:0;
   background:none;color:var(--text-2);cursor:pointer;
-  transition:background var(--transition),color var(--transition),transform var(--transition)}
-.win-btn:hover{background:rgba(255,255,255,.13);color:var(--text);transform:scale(1.1)}
+  transition:background var(--transition),color var(--transition)}
+/* NO transform on these (hover zoom / press squish removed 2026-11-02): they're no-drag holes in the app-region:drag
+   title bar, and while a hole's geometry animates WebView2 keeps re-sending the drag region to Windows — the click was
+   held ~200-300 ms until the zoom settled (measured: Maximize pointerdown 300 ms after a real press → 7 ms without it;
+   even scaling only the inner icon still cost 40-100 ms). Colour/background transitions are free. */
+.win-btn:hover{background:rgba(255,255,255,.13);color:var(--text)}
 /* Maximized Fitts's-law: throwing the mouse into the screen's top-right corner must hit Close — the 32px circles
    don't reach the edge, so extend their HIT AREAS invisibly (the C# hit-test is HTCLIENT everywhere maximized). */
 body.win-maximized .win-btn{position:relative}
 body.win-maximized .win-btn::after{content:"";position:absolute;inset:-10px -4px}
 body.win-maximized .win-btn.win-close::after{right:-14px;top:-26px}   /* cover clear to the true screen corner */
-.win-btn:active{transform:scale(.95)}
+.win-btn:active{background:rgba(255,255,255,.2)}
 .win-btn svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.4}
-.win-btn.win-close:hover{background:var(--danger);color:#12060a;transform:scale(1.1)}
+.win-btn.win-close:hover{background:var(--danger);color:#12060a}
 
 /* ── Frameless resize grips — invisible edge/corner strips that fire a native resize via the bridge (no-drag so
    WebView2 won't move the window). Corners sit above edges; all hidden when the window is maximized. ── */
