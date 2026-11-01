@@ -1210,7 +1210,14 @@
   function clipRel(ms) { const s = (Date.now() - ms) / 1000; if (s < 60) return "Now"; if (s < 3600) return Math.floor(s / 60) + "m ago"; if (s < 86400) return Math.floor(s / 3600) + "h ago"; return Math.floor(s / 86400) + "d ago"; }
   function clipDur(sec) { sec = Math.round(sec || 0); return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0"); }
   function clipBytes(b) { if (!b) return "0 MB"; const gb = b / 1073741824; return gb >= 1 ? gb.toFixed(1) + " GB" : Math.max(1, Math.round(b / 1048576)) + " MB"; }
-  function clipUrl(name) { return "https://clips.local/" + encodeURIComponent(name); }
+  // clips.local maps the raw ClipsDir; editor exports (trims / cuts / combined) live in its "Edited" subfolder, so their
+  // URL needs that path segment — before, an edited clip (and its .mic/.chat sidecars) 404'd and the player stayed black.
+  function isEditedClip(name) {
+    const stem = String(name).replace(/\.(mic|chat)\.wav$/i, "").replace(/\.mp4$/i, "") + ".mp4";
+    const c = _clips.find(x => x.name === stem);
+    return !!(c && c.edited);
+  }
+  function clipUrl(name) { return "https://clips.local/" + (isEditedClip(name) ? "Edited/" : "") + encodeURIComponent(name); }
 
   const thumbMem = {};
   const DISK_ICO = `<svg class="gal-storage-ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 14h18"/><circle cx="16.5" cy="17" r=".9" fill="currentColor"/></svg>`;
