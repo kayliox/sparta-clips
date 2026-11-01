@@ -1061,7 +1061,13 @@ namespace SpartaClips
             if (_chime) ClipChime.Play();   // instant "got it" the moment the hotkey lands — BEFORE the (slow) stop+finalize+stitch
             Notify?.Invoke("saving", "{}");   // → gallery shows an optimistic "saving" card immediately (resolves on "saved")
             string gameTmp = "";
-            await _repGate.WaitAsync();
+            // Bounded: a save that can't get the buffer within 45 s says so instead of silently never happening.
+            if (!await _repGate.WaitAsync(TimeSpan.FromSeconds(45)))
+            {
+                DiagLog.Line("CLIP", "save replay: buffer busy for 45 s — save abandoned");
+                Notify?.Invoke("trimfail", "{}");
+                return;
+            }
             try
             {
                 // Re-check INSIDE the gate (like RotateAsync) — a disarm/re-arm holding the gate flips _armed while this
@@ -1118,7 +1124,9 @@ namespace SpartaClips
         private static async Task RotateAsync()
         {
             if (!_armed) return;
-            await _repGate.WaitAsync();
+            if (System.Threading.Interlocked.CompareExchange(ref _rotQueued, 1, 0) != 0) return;   // one already queued: it rolls with the latest target
+            try { await _repGate.WaitAsync(); }
+            finally { System.Threading.Volatile.Write(ref _rotQueued, 0); }
             try
             {
                 if (!_armed) return;
@@ -1175,6 +1183,8 @@ namespace SpartaClips
         }
 
         private static readonly TimeSpan MinSegmentAge = TimeSpan.FromMilliseconds(1500);
+        private static TimeSpan SegmentStopTimeout = TimeSpan.FromSeconds(30);   // not readonly: the stuck-recorder test shortens it
+        private static int _rotQueued;   // 1 while a roll is waiting for the gate — timer ticks don't pile up behind a slow one
         // Stop the current segment and await its finalized file (caller holds _repGate). Returns the path or null.
         private static async Task<string?> StopSegmentAsync()
         {
@@ -1188,10 +1198,28 @@ namespace SpartaClips
                 var age = DateTime.UtcNow - started;
                 if (age < MinSegmentAge) await Task.Delay(MinSegmentAge - age).ConfigureAwait(false);
             }
-            string path;
-            try { rec.Stop(); path = await tcs.Task.ConfigureAwait(false); }
-            catch { path = _bufCur; }
-            finally { DisposeRec(rec); }   // the next StartSegment waits for this to finish
+            // BOUNDED: the recorder's completion event is not guaranteed. After the hardware encoder choked
+            // (MF 0xc00d36b5 "not accepting further input") one recorder never fired OnRecordingComplete/Failed — this await
+            // hung holding _repGate, and every later roll (360 over 12 h) and every replay save queued behind it forever,
+            // silently (2026-11-01/02, confirmed by a live dump: 1 StopSegmentAsync awaiting, 360 RotateAsync + 4 saves
+            // waiting on the gate). A normal finish takes ~1-2 s even for a 2-minute segment.
+            string? path = null; bool finished = false;
+            try
+            {
+                _ = Task.Run(() => { try { rec.Stop(); } catch { } });   // Stop itself must not be able to block the gate either
+                var first = await Task.WhenAny(tcs.Task, Task.Delay(SegmentStopTimeout)).ConfigureAwait(false);
+                if (first == tcs.Task) { path = await tcs.Task.ConfigureAwait(false); finished = true; }
+                else DiagLog.Line("CLIP", "replay segment did not finish within " + (int)SegmentStopTimeout.TotalSeconds +
+                                  " s (recorder/encoder stuck) — abandoning it and restarting the buffer");
+            }
+            catch { path = _bufCur; finished = true; }
+            if (finished) DisposeRec(rec);   // the next StartSegment waits for this to finish
+            else
+            {
+                // A stuck recorder may also hang in Dispose — tear it down on its own thread, OUTSIDE the dispose chain, so
+                // it can never delay the next recorder. Its half-written file is unusable (no moov); the next sweep removes it.
+                var stuck = rec; _ = Task.Run(() => { try { stuck.Dispose(); } catch { } });
+            }
             return path;
         }
 
