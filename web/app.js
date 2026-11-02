@@ -1203,6 +1203,12 @@
       }
       else if (ev === "autoclip") { _pendingAuto = { label: (detail && detail.label) || "Highlight", at: Date.now() }; showToast("Auto-clip", "Highlight detected" + (detail && detail.label ? " · " + detail.label : "") + " — saving…"); }
       else if (ev === "exportjob") { clipJobUi(detail || {}); }
+      else if (ev === "deleted") {
+        const nm = detail && detail.name ? String(detail.name) : "";
+        if (detail && detail.ok) { if (!_bulkDeleting) showToast("Deleted", parseClip(nm).game || nm); }
+        else showToast("Couldn't delete", (parseClip(nm).game || nm) + " is open in another program. Close it and try again.");
+        clearTimeout(_delRefreshT); _delRefreshT = setTimeout(() => clipsNative.requestClips(), 150);
+      }
       else if (ev === "segprogress") { if (detail && detail.total > 1) showToast("Exporting segments…", "Done " + detail.done + " of " + detail.total); }
       else if (ev === "transcoding") { showToast("Encoding AV1…", "Finishing your clip — it'll appear in the gallery shortly."); }
       else if (ev === "av1fail") { showToast("AV1 encode failed", "Saved the recording as H.264 instead."); }
@@ -1260,6 +1266,7 @@
   // One job state, painted into every .job-pill (the gallery toolbar's right end — Create clip returns you there — and
   // the editor header). The gallery header is re-rendered from a template, so it reads this state when it's rebuilt.
   let _job = { state: "", p: 0, label: "", name: "", count: 1 }, _jobHideT = 0;
+  let _delRefreshT = 0, _bulkDeleting = false;   // delete results arrive per clip ("deleted"); bulk deletes toast once
   function jobPillHTML() {
     return `<div class="job-pill" role="status" aria-live="polite" hidden><div class="job-fill"></div><span class="job-txt"></span><span class="job-pct"></span><button class="job-open" hidden>Open</button></div>`;
   }
@@ -1587,6 +1594,7 @@
     if (!_galSelecting) { enterGalSelect(); showToast("Delete clips", "Tick the clips to remove, then click Delete."); return; }
     const names = [..._galSel];
     if (!names.length) { exitGalSelect(); return; }
+    _bulkDeleting = true; setTimeout(() => { _bulkDeleting = false; }, 8000);   // one summary toast; per-clip failures still show
     names.forEach(nm => { clipsNative.deleteClip(nm); dropClipState(nm); });
     save();
     showToast("Deleted", names.length + " clip" + (names.length === 1 ? "" : "s"));
@@ -1641,12 +1649,17 @@
     menu.addEventListener("click", (e) => {
       const b = e.target.closest("button"); if (!b) return;
       const act = b.dataset.act;
-      if (act === "delete" && !armDelete) { armDelete = true; b.textContent = "Click again to delete"; return; }   // two-click confirm
+      // Two-click confirm — the armed state is unmistakable (solid red) and disarms itself after 3 s.
+      if (act === "delete" && !armDelete) {
+        armDelete = true; b.textContent = "Click again to delete"; b.classList.add("armed");
+        setTimeout(() => { if (b.isConnected) { armDelete = false; b.textContent = "Delete"; b.classList.remove("armed"); } }, 3000);
+        return;
+      }
       closeCardMenu();
       if (act === "share") openSharePopup(name);
       else if (act === "rename") renameCardInline(name);
       else if (act === "open") clipsNative.revealClip(name);
-      else if (act === "delete") { clipsNative.deleteClip(name); dropClipState(name); save(); showToast("Deleted", parseClip(name).game || name); setTimeout(() => clipsNative.requestClips(), 300); }
+      else if (act === "delete") { if (name === _clipName) closeClipPage(); clipsNative.deleteClip(name); dropClipState(name); save(); }   // toast + list refresh on C#'s "deleted"
     });
     _cardMenu = menu;
     setTimeout(() => { document.addEventListener("pointerdown", _cardMenuOutside, true); window.addEventListener("resize", closeCardMenu); }, 0);
@@ -2596,7 +2609,7 @@
                                          : ((_hasMic || _hasChat) ? "Mixing video + audio tracks — it'll appear in the gallery (Edited)." : "Re-encoding " + clipDur(_clipOut - _clipIn) + " — it'll appear in the gallery (Edited)."));
       closeClipPage();
   }); }
-  { const b = $("#clipDeleteBtn"); if (b) b.addEventListener("click", () => { const n = curClipName(); if (!n) return; if (state.clipBookmarks) delete state.clipBookmarks[n]; if (state.clipSegments) delete state.clipSegments[n]; save(); clipsNative.deleteClip(n); closeClipPage(); setTimeout(() => clipsNative.requestClips(), 250); showToast("Deleted", n); }); }
+  { const b = $("#clipDeleteBtn"); if (b) b.addEventListener("click", () => { const n = curClipName(); if (!n) return; if (state.clipBookmarks) delete state.clipBookmarks[n]; if (state.clipSegments) delete state.clipSegments[n]; save(); closeClipPage(); clipsNative.deleteClip(n); }); }   // close first: the player lets go of the file; C# reports "deleted"
   { const b = $("#clipOpenBtn"); if (b) b.addEventListener("click", () => { const n = curClipName(); if (n) clipsNative.revealClip(n); }); }
   { const b = $("#clipShareBtn"); if (b) b.addEventListener("click", () => { const n = curClipName(); if (n) openSharePopup(n, clipSelActive() ? _clipIn : 0, clipSelActive() ? _clipOut : 0); }); }
   { const b = $("#clipExportBtn"); if (b) b.addEventListener("click", openExportMenu); }

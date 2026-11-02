@@ -549,6 +549,7 @@ body.app-idle .gal-rec-dot,body.app-idle .gal-armed .gal-rec-dot{animation-play-
 .gal-menu button:hover{background:var(--elev-1)}
 .gal-menu button.danger{color:var(--danger)}
 .gal-menu button.danger:hover{background:rgba(255,90,90,.12)}
+.gal-menu button.danger.armed,.gal-menu button.danger.armed:hover{background:var(--danger);color:#fff;font-weight:700}
 @media (prefers-reduced-motion: reduce){ .gal-menu{animation:none} }
 
 /* ── Dual-screen layout designer ── */

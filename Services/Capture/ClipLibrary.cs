@@ -62,10 +62,26 @@ namespace SpartaClips
             return d;
         }
 
+        /// <summary>Delete a clip + its sidecars + cached preview. A file that's briefly in use (a background preview /
+        /// thumbnail ffmpeg, the editor's player letting go) is released and retried for up to ~4 s. before: any sharing
+        /// violation was swallowed — the UI said "Deleted" and the clip stayed. Returns false only if it truly couldn't.</summary>
         public static bool Delete(string name)
         {
-            try { var p = Resolve(name); if (p != null) { File.Delete(p); TryDelete(ClipRecorder.MicSidecar(p)); TryDelete(ClipRecorder.ChatSidecar(p)); TryDelete(ClipRecorder.MarksSidecar(p)); return true; } } catch { }
-            return false;
+            var p = Resolve(name); if (p == null) return false;
+            Exception? last = null;
+            for (int attempt = 0; attempt < 20; attempt++)
+            {
+                try { File.Delete(p); last = null; break; }
+                catch (IOException ex) { last = ex; }
+                catch (UnauthorizedAccessException ex) { last = ex; }
+                if (attempt == 0 && ClipFfmpeg.ReleaseFile(p) > 0) DiagLog.Line("CLIP", "delete: stopped a background job holding " + Path.GetFileName(p));
+                System.Threading.Thread.Sleep(200);
+            }
+            if (last != null || File.Exists(p)) { DiagLog.Line("CLIP", "delete FAILED " + Path.GetFileName(p) + ": " + (last?.Message ?? "still exists")); return false; }
+            TryDelete(ClipRecorder.MicSidecar(p)); TryDelete(ClipRecorder.ChatSidecar(p)); TryDelete(ClipRecorder.MarksSidecar(p));
+            TryDelete(ClipFfmpeg.ProxyPathFor(p));
+            DiagLog.Line("CLIP", "deleted " + Path.GetFileName(p));
+            return true;
         }
 
         // Delete ONLY the mic sidecar (the "Delete mic" button in the editor) — the clip keeps its embedded audio.

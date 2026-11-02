@@ -404,6 +404,7 @@ namespace SpartaClips
             try
             {
                 if (ProxyFresh(proxy, srcPath)) return proxy;   // built while we waited
+                if (!File.Exists(srcPath)) return null;          // deleted while it waited in the queue
                 string tmp = Path.Combine(ProxyDir, "_p_" + DateTime.Now.Ticks + ".mp4");
                 // 720p, libx264 veryfast, keyframe every 20 frames with scene-cut OFF (evenly spaced → predictable snapping).
                 // SOFTWARE decode (no -hwaccel) is intentional + measurably fastest here: HW HEVC decode adds a slow
@@ -745,6 +746,24 @@ namespace SpartaClips
             });
         }
 
+        // Running ffmpeg passes (process → its args) — lets a clip delete release the file first.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<Process, string> _running = new();
+        private readonly struct Unregister : IDisposable { private readonly Process _p; public Unregister(Process p) => _p = p; public void Dispose() => _running.TryRemove(_p, out _); }
+        /// <summary>Stop every running ffmpeg pass that reads or writes `path` (a background preview/thumbnail build had the
+        /// clip open, so the user's delete hit a sharing violation and silently failed). Returns how many were stopped.</summary>
+        public static int ReleaseFile(string path)
+        {
+            int n = 0;
+            foreach (var kv in _running)
+            {
+                if (kv.Value.IndexOf(path, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                try { if (!kv.Key.HasExited) { kv.Key.Kill(true); kv.Key.WaitForExit(2000); n++; } } catch { }
+            }
+            return n;
+        }
+        /// <summary>The cached editor preview proxy of a clip (deleted along with the clip).</summary>
+        public static string ProxyPathFor(string srcPath) => Path.Combine(ProxyDir, Path.GetFileNameWithoutExtension(srcPath) + ".proxy.mp4");
+
         private static async Task<bool> RunAsync(string ff, string args, string dst)
         {
             try
@@ -752,6 +771,8 @@ namespace SpartaClips
                 var (pargs, redirect) = WithProgress(args);
                 var psi = new ProcessStartInfo(ff, pargs) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = redirect };
                 using var p = Process.Start(psi); if (p == null) return false;
+                _running[p] = pargs;   // so ReleaseFile can stop a job that's holding a clip the user is deleting
+                using var unreg = new Unregister(p);
                 if (!_userWaiting.Value) try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }   // background: never starve the game / WebView2 renderer
                 var ct = _cancel.Value;
                 using var killOnCancel = ct.CanBeCanceled ? ct.Register(() => { try { if (!p.HasExited) p.Kill(true); } catch { } }) : default;

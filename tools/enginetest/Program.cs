@@ -8,6 +8,7 @@
 //   F. capture-target filter— desktop / null / shell windows are never capture targets
 //   G. share mix            — a chat track muted in the editor stays out of the Discord share
 //   H. window-switch replay — segments of different sizes are letterboxed + joined (full length, not dropped)
+//   K. delete a busy clip  — a background job holding the file is stopped; another program's lock fails honestly
 //
 // C plays a quiet (-26 dBFS) 440 Hz tone for ~2 s on the default output device. Needs ffmpeg (fetched by the app on
 // first run, %APPDATA%\SpartaClips\tools\ffmpeg); C/D are SKIPPED without it.
@@ -157,6 +158,37 @@ else Skip("I. replay join keeps the real segment gap", "no ffmpeg");
     Check("J. update notes: new format", notesNew == "•  Fix replay sync\n•  Numpad hotkeys", notesNew.Replace("\n", " | "));
     Check("J. update notes: older releases", notesOld == "•  Hotkeys: allow numpad", notesOld.Replace("\n", " | "));
 }
+
+// K — deleting a clip that a background preview build is still reading: the delete stops that ffmpeg and succeeds
+// (before: the sharing violation was swallowed — the UI said "Deleted" and the clip stayed). And a clip held open by
+// ANOTHER program reports failure honestly, then deletes once released.
+if (haveFf)
+{
+    var lib = T("ClipLibrary");
+    string kdir = Path.Combine(tmp, "kclips"); Directory.CreateDirectory(kdir);
+    Call(rec, "SetClipsDir", kdir);
+    string kname = "DelTest_02.11.2026.04.10.mp4", kpath = Path.Combine(kdir, kname);
+    var gen = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(ff,
+        $"-nostdin -y -hide_banner -loglevel error -f lavfi -i testsrc2=s=1920x1080:r=60:d=90 -c:v libx264 -preset ultrafast -g 600 \"{kpath}\"") { UseShellExecute = false, CreateNoWindow = true });
+    gen!.WaitForExit();
+    var proxyTask = (Task<string>)Call(ffm, "EnsureProxyAsync", kpath);
+    Thread.Sleep(900);   // the proxy ffmpeg is now reading the clip
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    bool del = (bool)Call(lib, "Delete", kname);
+    string? prox = null; try { prox = proxyTask.GetAwaiter().GetResult(); } catch { }
+    Check("K. delete releases a clip a background job is reading", del && !File.Exists(kpath) && prox == null,
+          $"deleted={del} gone={!File.Exists(kpath)} in {sw.ElapsedMilliseconds} ms, proxy cancelled={prox == null}");
+    // held open by another program (no FILE_SHARE_DELETE) → honest failure, then success once released
+    var gen2 = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(ff,
+        $"-nostdin -y -hide_banner -loglevel error -f lavfi -i testsrc2=s=320x180:r=30:d=3 -c:v libx264 -preset ultrafast \"{kpath}\"") { UseShellExecute = false, CreateNoWindow = true });
+    gen2!.WaitForExit();
+    bool held;
+    using (var lockFs = new FileStream(kpath, FileMode.Open, FileAccess.Read, FileShare.Read)) held = (bool)Call(lib, "Delete", kname);
+    bool after = (bool)Call(lib, "Delete", kname);
+    Check("K. a clip open in another program reports failure, deletes once released", !held && after && !File.Exists(kpath), $"while held={held} after release={after}");
+    Call(rec, "SetClipsDir", (string?)null);
+}
+else Skip("K. delete releases a busy clip", "no ffmpeg");
 
 // E — share resolution ladder for a 60 s 3440x1440 @ 26 fps clip
 int H(int tierMb) { double vbps = (tierMb * 8.0 * 1048576 * 0.95 - 160_000 * 60) / 60; return (int)Call(share, "ShareHeight", vbps, 3440, 1440, 26.0); }

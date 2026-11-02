@@ -233,7 +233,16 @@ namespace SpartaClips
                 PostToWeb("window.onClips && window.onClips(" + json + ")");
             });
         }
-        public void DeleteClip(string name)            { Task.Run(() => { try { ClipLibrary.Delete(name); } catch (Exception ex) { DiagLog.Line("CLIP", "delete err: " + ex.Message); Toast("Delete failed", "Couldn't delete this clip — it may be open in another app."); } }); }
+        public void DeleteClip(string name)
+        {
+            Task.Run(() =>
+            {
+                bool ok = false;
+                try { ok = ClipLibrary.Delete(name); } catch (Exception ex) { DiagLog.Line("CLIP", "delete err: " + ex.Message); }
+                // The page refreshes the list either way; on failure it says so instead of the optimistic "Deleted".
+                PostToWeb("window.onCapture && window.onCapture(\"deleted\"," + JsonConvert.SerializeObject(new { name, ok }) + ")");
+            });
+        }
         // Gallery poster: build (cached) a JPEG thumbnail and hand back its clipthumb.local URL via window.onClipThumb.
         // Replaces the per-card <video> thumbnails (N live decoders) that made the gallery lag and clips slow to open.
         public void EnsureThumb(string name)
