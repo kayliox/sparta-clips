@@ -690,6 +690,15 @@ body.app-idle .gal-rec-dot,body.app-idle .gal-armed .gal-rec-dot{animation-play-
 .clip-editor{flex:none;padding:0 8px}   /* room for the trim handles (14px, centred on the timeline ends) — the right one poked 7px past the column → horizontal scrollbar */
 .clip-tl{position:relative;height:40px;border-radius:var(--r-sm);background:var(--surface-2);border:1px solid var(--line);cursor:pointer}
 .clip-tl-fill{position:absolute;top:0;bottom:0;background:var(--accent-soft);border-left:2px solid var(--accent);border-right:2px solid var(--accent)}
+/* Fine-adjust zoom (hold a trim handle 1 s): tick ruler (0.1 s minor / 1 s major) + accent rim; markers that are
+   positioned on the full-clip scale hide while zoomed. */
+.clip-tl-ticks{position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity .2s;border-radius:inherit;
+  background-image:linear-gradient(to right,rgba(255,255,255,.34) 1px,transparent 1px),linear-gradient(to right,rgba(255,255,255,.12) 1px,transparent 1px);
+  background-repeat:repeat-x;-webkit-mask:linear-gradient(to bottom,#000 0,#000 34%,transparent 34%,transparent 66%,#000 66%);mask:linear-gradient(to bottom,#000 0,#000 34%,transparent 34%,transparent 66%,#000 66%)}
+.clip-tl.zoomed{border-color:var(--accent-line);box-shadow:0 0 0 1px rgba(var(--accent-rgb),.25),0 0 18px -6px rgba(var(--accent-rgb),.6);transition:box-shadow .2s,border-color .2s}
+.clip-tl.zoomed .clip-mark,.clip-tl.zoomed .clip-seg{display:none}
+.clip-tl-fill.cut-l{border-left-color:transparent}
+.clip-tl-fill.cut-r{border-right-color:transparent}
 .clip-playhead{position:absolute;top:0;bottom:0;width:2px;background:#fff;left:0;pointer-events:none;box-shadow:0 0 4px rgba(0,0,0,.8)}
 #clipPlayhead::before{content:"";position:absolute;top:-7px;left:-5px;width:12px;height:12px;border-radius:50%;background:#fff;box-shadow:0 0 0 3px rgba(255,59,78,.35),0 1px 4px rgba(0,0,0,.6);
   pointer-events:auto;cursor:grab;transition:transform .14s cubic-bezier(.2,.8,.2,1),background .12s,box-shadow .14s}   /* grab knob: the whole knob is grabbable (its top half sits ABOVE the timeline) */
