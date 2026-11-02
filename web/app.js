@@ -1123,8 +1123,14 @@
       const editorOpen = (() => { const pg = $("#clipPage"); return pg && !pg.hidden; })();
       // A full gallery innerHTML rebuild underneath the fixed editor overlay is wasted work (every replay save while
       // editing triggered one) — mark it stale and rebuild once when the editor closes.
-      if (changed && _view === "gallery") { if (editorOpen) _galStale = true; else renderLibrary(); }
-      if (changed && editorOpen) renderRecentClips();
+      // The clip open in the editor was deleted/renamed outside the app → leave the editor instead of a dead player.
+      if (editorOpen && _clipName && !clips.some(c => c.name === _clipName)) {
+        const gone = _clipName; closeClipPage();
+        showToast("Clip removed", (parseClip(gone).game || gone) + " was deleted or moved outside the app.");
+      }
+      const editorStill = (() => { const pg = $("#clipPage"); return pg && !pg.hidden; })();
+      if (changed && _view === "gallery") { if (editorStill) _galStale = true; else renderLibrary(); }
+      if (changed && editorStill) renderRecentClips();
     } catch {}
   };
   const _thumbReq = new Set(), _infoReq = new Set();   // in-flight bridge requests — a gallery rebuild must not re-fire N pending probes
@@ -1203,6 +1209,9 @@
       }
       else if (ev === "autoclip") { _pendingAuto = { label: (detail && detail.label) || "Highlight", at: Date.now() }; showToast("Auto-clip", "Highlight detected" + (detail && detail.label ? " · " + detail.label : "") + " — saving…"); }
       else if (ev === "exportjob") { clipJobUi(detail || {}); }
+      else if (ev === "library") {   // the clips folder changed outside the app (Explorer delete/rename/copy-in)
+        clearTimeout(_delRefreshT); _delRefreshT = setTimeout(() => clipsNative.requestClips(), 50);
+      }
       else if (ev === "deleted") {
         const nm = detail && detail.name ? String(detail.name) : "";
         if (detail && detail.ok) { if (!_bulkDeleting) showToast("Deleted", parseClip(nm).game || nm); }

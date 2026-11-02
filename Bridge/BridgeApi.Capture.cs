@@ -17,6 +17,7 @@ namespace SpartaClips
         // after:  it sets TrayCore.WebSink; TrayCore.Notify handles the toast (works with the window closed).
         private void EnsureCaptureWired()
         {
+            ClipFolderWatcher.Ensure();   // gallery follows changes made in Explorer (delete/rename/copy-in)
             if (_captureWired) return; _captureWired = true;
             TrayCore.WebSink = (ev, json) =>
             {
@@ -291,7 +292,7 @@ namespace SpartaClips
         public void OpenClipsFolder()                  { try { ClipLibrary.OpenFolder(); } catch { } }
         public void RevealClip(string name)            { try { ClipLibrary.Reveal(name); } catch { } }
         public string GetClipsDir()                    { try { return ClipRecorder.PeekClipsDir; } catch { return ""; } }   // Peek: no CreateDirectory on the UI thread (dead SMB path = pump stall)
-        public void SetClipsDir(string dir)            { try { ClipRecorder.SetClipsDir(dir); } catch { } }
+        public void SetClipsDir(string dir)            { try { ClipRecorder.SetClipsDir(dir); ClipFolderWatcher.Ensure(); } catch { } }
         // Round-trip write probe so the UI can refuse a read-only / admin-only Save folder before committing.
         // Callback style (→ window.onFolderWritable(ok)) — a dead network path can block on the SMB timeout for tens
         // of seconds, which must never happen on the UI/message-pump thread (it also hosts the keyboard hook).
