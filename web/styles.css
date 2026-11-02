@@ -182,6 +182,10 @@ input[type=checkbox]{accent-color:var(--accent)}
 .hud-timer .hud-timer-txt{font-family:var(--mono);font-size:.78rem;font-variant-numeric:tabular-nums}
 .hud-timer.paused{background:rgba(var(--amber-rgb),.12);border-color:rgba(var(--amber-rgb),.45);color:var(--amber)}
 .hud-timer.paused .gal-rec-dot{background:var(--amber);animation:none}
+/* Waiting for the pinned app to open: neutral pill, slow amber pulse (opacity only — title bar, see .win-btn note). */
+.hud-timer.waiting{background:var(--surface-2);border-color:rgba(var(--amber-rgb),.45);color:var(--text-2)}
+.hud-timer.waiting .gal-rec-dot{background:var(--amber);animation:galpulse 1.6s ease-in-out infinite}
+.hud-timer.waiting .hud-timer-txt{font-family:inherit;font-size:var(--text-xs);max-width:220px;overflow:hidden;text-overflow:ellipsis}
 .src-mode{display:flex;flex-direction:column;gap:.15rem;width:100%;text-align:left;border:1px solid transparent;
   background:none;border-radius:var(--r);padding:.55rem .7rem;cursor:pointer;transition:background var(--transition)}
 .src-mode:hover{background:var(--surface-2)}

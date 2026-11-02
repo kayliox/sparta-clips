@@ -184,6 +184,7 @@ namespace SpartaClips
         public void StopManualCapture() { TrayCore.Instance?.StopManualRecord(); }
         public void PauseManualCapture(bool pause) { Task.Run(() => { try { if (pause) ClipRecorder.Pause(); else ClipRecorder.Resume(); } catch { } }); }
         public bool IsClipPaused() { try { return ClipRecorder.IsPaused; } catch { return false; } }
+        public string WaitingForApp() { try { return TrayCore.Instance?.WaitingForApp ?? ""; } catch { return ""; } }   // manual Start waiting for the pinned app
         // Live-engine snapshot (JSON) for the diagnostic tools — see ClipRecorder.DiagJson.
         public string GetEngineDiag() { try { return ClipRecorder.DiagJson(); } catch { return "{}"; } }
         public string GetCaptureTarget() { try { return ClipRecorder.CaptureTargetJson(); } catch { return "{\"state\":\"idle\"}"; } }   // gallery "Capturing <app>" line (polled ~1 Hz while visible)

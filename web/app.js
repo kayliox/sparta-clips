@@ -68,6 +68,7 @@
       stopManualCapture:  ()         => call(b => b.StopManualCapture()),
       pauseManualCapture: (on)       => call(b => b.PauseManualCapture(!!on)),
       isClipPaused:       ()         => call(b => b.IsClipPaused()),
+      waitingForApp:      ()         => call(b => b.WaitingForApp()),
       armReplay:        (game)       => call(b => b.ArmReplay(String(game || ""))),
       disarmReplay:     ()           => call(b => b.DisarmReplay()),
       saveReplay:       ()           => call(b => b.SaveReplay()),
@@ -422,7 +423,7 @@
   // ── recording-elapsed timer: ticks ONLY while recording AND the window is open (no other pollers) ──
   // The clock is the CLIP's timeline (paused stretches excluded): a local model { base seconds at base time, paused }
   // re-synced from the engine (RecElapsedSec) on every state change + window open, so it never drifts or counts a pause.
-  let _recTick = null, _recBaseSec = 0, _recBaseAt = 0, _recPaused = false;
+  let _recTick = null, _recBaseSec = 0, _recBaseAt = 0, _recPaused = false, _waitingApp = "";
   function recElapsedNow() { return _recPaused ? _recBaseSec : _recBaseSec + Math.max(0, (Date.now() - _recBaseAt) / 1000); }
   // Reset the model ONLY on the idle→recording transition — updateClipRecUI re-invokes this on every render, and an
   // unconditional reset restarted the visible timer at 0:00 on any background re-render mid-recording.
@@ -435,24 +436,24 @@
   function paintRecElapsed() {
     const s = Math.floor(recElapsedNow()), txt = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
     const pill = $("#tbRecTimer"), pt = $("#tbRecTimerTxt"), ct = $("#srcCapTime");
-    if (pill) { pill.hidden = !_recording; pill.classList.toggle("paused", _recording && _recPaused); }
-    if (pt) pt.textContent = (_recPaused ? "Paused " : "") + txt;
-    if (ct) { ct.textContent = _recording ? txt : "0:00"; ct.classList.toggle("live", _recording && !_recPaused); ct.classList.toggle("paused", _recording && _recPaused); }
+    const waiting = !_recording && !!_waitingApp;
+    if (pill) { pill.hidden = !_recording && !waiting; pill.classList.toggle("paused", _recording && _recPaused); pill.classList.toggle("waiting", waiting); }
+    if (pt) pt.textContent = waiting ? "Waiting for " + _waitingApp : (_recPaused ? "Paused " : "") + txt;
+    if (ct) { ct.textContent = _recording ? txt : waiting ? "waiting" : "0:00"; ct.classList.toggle("live", _recording && !_recPaused); ct.classList.toggle("paused", (_recording && _recPaused) || waiting); }
   }
   // Source-popover manual-capture buttons follow the engine state (idle: Start · recording: Pause + Stop).
   function updateCapControls() {
     const st = $("#srcCapStart"), pa = $("#srcCapPause"), sp = $("#srcCapStop"), hint = $("#srcCapHint");
-    if (st) st.disabled = _recording;
+    const waiting = !_recording && !!_waitingApp;
+    if (st) st.disabled = _recording || waiting;
     if (pa) { pa.disabled = !_recording; pa.classList.toggle("paused", _recording && _recPaused); const l = pa.querySelector(".cap-pause-lbl"); if (l) l.textContent = _recPaused ? "Resume" : "Pause"; }
-    if (sp) sp.disabled = !_recording;
-    if (hint) hint.textContent = !_recording ? "Record the selected source right now." : _recPaused ? "Paused — Resume to keep recording, Stop to save." : "Recording — Stop saves it to your clips.";
+    if (sp) { sp.disabled = !_recording && !waiting; const l = sp.querySelector("span"); if (l) l.textContent = waiting ? "Cancel" : "Stop"; }
+    if (hint) hint.textContent = waiting ? "Waiting for " + _waitingApp + " to open — recording starts automatically."
+      : !_recording ? "Record the selected source right now." : _recPaused ? "Paused — Resume to keep recording, Stop to save." : "Recording — Stop saves it to your clips.";
   }
-  function startManualCapture() {
-    if (_recording) return;
-    clipsNative.startManualCapture(curGameTitle());
-    showToast("Recording", "Manual capture started — Stop saves it to your clips.");
-  }
-  function stopManualCapture() { if (_recording) clipsNative.stopManualCapture(); }
+  // Start = record now, or (pinned app closed) wait for it — C# decides and reports via the "state" event (toasts there).
+  function startManualCapture() { if (!_recording && !_waitingApp) clipsNative.startManualCapture(curGameTitle()); }
+  function stopManualCapture() { if (_recording || _waitingApp) clipsNative.stopManualCapture(); }
   function togglePauseCapture() { if (_recording) clipsNative.pauseManualCapture(!_recPaused); }
   { const b = $("#srcCapStart"); if (b) b.addEventListener("click", startManualCapture); }
   { const b = $("#srcCapPause"); if (b) b.addEventListener("click", togglePauseCapture); }
@@ -1178,7 +1179,14 @@
   let _pendingAuto = null;
   window.onCapture = (ev, detail) => {
     try {
-      if (ev === "state") { _recording = !!(detail && detail.recording); _recPaused = _recording && !!(detail && detail.paused); updateClipRecUI(); syncRecElapsed(); }
+      if (ev === "state") {
+        const wasRec = _recording, wasWait = _waitingApp;
+        _recording = !!(detail && detail.recording); _recPaused = _recording && !!(detail && detail.paused);
+        _waitingApp = !_recording && detail && detail.waiting ? String(detail.waiting) : "";
+        if (_waitingApp && !wasWait) showToast("Waiting for " + _waitingApp, "Recording starts automatically as soon as it opens.");
+        else if (_recording && !wasRec) showToast("Recording", "Manual capture started — Stop saves it to your clips.");
+        updateClipRecUI(); syncRecElapsed();
+      }
       else if (ev === "replay") { _replayArmed = !!(detail && detail.armed); updateClipRecUI(); }   // HUD-only state — a full gallery rebuild on every arm/disarm (each game focus change under armPolicy "game") was wasted work
       else if (ev === "saving") { _replaySaving = true; if (_view === "gallery") renderLibrary(); }
       else if (ev === "saved") {
@@ -1213,7 +1221,7 @@
     clipsNative.setReplayEnabled(state.settings.replayEnabled === true);
   }
   function toggleClipRecord() {
-    if (_recording) clipsNative.stopManualCapture();
+    if (_recording || _waitingApp) clipsNative.stopManualCapture();
     else { clipsNative.startManualCapture(curGameTitle()); showToast("Recording", "Capturing — press again (or your record hotkey) to stop."); }
   }
   function updateClipRecUI() {
@@ -1222,7 +1230,7 @@
     // amber Save-replay when the replay ring is armed, and "Stop m:ss" while a manual recording is running.
     const armed = _replayArmed && !_recording;
     const rec = $("#galRecBtn");
-    if (rec) { rec.hidden = armed; rec.classList.toggle("recording", _recording); const l = rec.querySelector(".gal-rec-label"); if (l) l.textContent = _recording ? "Stop" : "Record"; }
+    if (rec) { rec.hidden = armed && !_waitingApp; rec.classList.toggle("recording", _recording); const l = rec.querySelector(".gal-rec-label"); if (l) l.textContent = _recording ? "Stop" : _waitingApp ? "Cancel" : "Record"; }
     const sr = $("#galSaveReplay"); if (sr) sr.hidden = !armed;
     const om = $("#tbOmega"); if (om) { om.classList.toggle("rec", _recording); om.classList.toggle("armed", armed); }
     if (_recording) startRecTimer(); else stopRecTimer();
@@ -2510,7 +2518,7 @@
         // A hotkey recording started with NO window open pushed no "state" event this page could have seen — sync it,
         // then correct the elapsed epoch to the true start (updateClipRecUI's timer starts counting from window-open).
         clipsNative.isClipRecording().then(async r => {
-          if (!r) return;
+          if (!r) { try { const w = await clipsNative.waitingForApp(); if (w) { _waitingApp = String(w); updateClipRecUI(); } } catch {} return; }
           try { _recPaused = !!(await clipsNative.isClipPaused()); } catch {}
           _recording = true; updateClipRecUI(); syncRecElapsed();
         }).catch(() => {}),

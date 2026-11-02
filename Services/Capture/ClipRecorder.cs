@@ -325,6 +325,23 @@ namespace SpartaClips
         {
             try { GetWindowThreadProcessId(h, out uint pid); using var p = System.Diagnostics.Process.GetProcessById((int)pid); return p.ProcessName; } catch { return ""; }
         }
+        /// <summary>The pinned program (window source) when it has NO open window right now — a manual Start then waits for
+        /// it instead of silently falling back to the desktop. "" = not pinned, or the program is open (its window is
+        /// re-resolved here so the clip is named after it).</summary>
+        public static string MissingPinnedApp()
+        {
+            if (_srcMode != "window" || _pinProc.Length == 0) return "";
+            try { if (_srcHwnd != IntPtr.Zero && IsWindow(_srcHwnd)) return ""; } catch { }
+            var w = FindAppWindow(_pinProc);
+            if (w == IntPtr.Zero) return _pinProc;
+            _srcHwnd = w;
+            return "";
+        }
+        /// <summary>The pinned program name, or "" when the source isn't a window pin.</summary>
+        public static string PinnedApp => _srcMode == "window" ? _pinProc : "";
+        /// <summary>Raise a recorder event from outside the engine (TrayCore's wait-for-app state).</summary>
+        public static void RaiseNotify(string ev, string json) { try { Notify?.Invoke(ev, json); } catch { } }
+
         // The pinned program's main window (largest capturable one when it has several), or Zero when it isn't open.
         private static IntPtr FindAppWindow(string proc)
         {

@@ -257,7 +257,7 @@ namespace SpartaClips
             {
                 try
                 {
-                    record.Text = ClipRecorder.IsRecording ? "Stop recording" : "Start recording";
+                    record.Text = ClipRecorder.IsRecording ? "Stop recording" : _waitApp.Length > 0 ? "Stop waiting for " + _waitApp : "Start recording";
                     armed.Checked = ClipRecorder.IsReplayArmed;
                     replay.Enabled = ClipRecorder.IsReplayArmed;
                 }
@@ -362,7 +362,53 @@ namespace SpartaClips
         public void FireRecordToggle()
         {
             long now = Environment.TickCount64; if (now - _lastRecFire < 800) return; _lastRecFire = now;
-            if (ClipRecorder.IsRecording) StopManualRecord(); else StartManualRecord();
+            if (ClipRecorder.IsRecording || _waitApp.Length > 0) StopManualRecord(); else StartManualRecord();
+        }
+
+        // ── Wait for the pinned app: Start with a pinned window whose program is closed → wait for it to open, then record
+        //    it automatically (before: Start fell back to capturing the whole desktop). Instant replay keeps running while
+        //    waiting; Stop / the record hotkey / changing the capture source cancels. UI thread owns the state. ──
+        private volatile string _waitApp = "";
+        private System.Windows.Forms.Timer? _waitTimer;
+        private int _waitSeen;
+        public string WaitingForApp => _waitApp;
+        private void BeginWaitForApp(string app)
+        {
+            _ui.BeginInvoke(new Action(() =>
+            {
+                if (_waitApp.Length > 0 || ClipRecorder.IsRecording) return;
+                _waitApp = app; _waitSeen = 0;
+                _waitTimer?.Dispose();
+                _waitTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+                _waitTimer.Tick += (s, e) => WaitTick();
+                _waitTimer.Start();
+                DiagLog.Line("CLIP", "manual capture: waiting for " + app + " to open");
+                ClipRecorder.RaiseNotify("state", Newtonsoft.Json.JsonConvert.SerializeObject(new { recording = false, waiting = app }));
+                Toast(ToastKind.Warning, "Waiting for " + app, "Recording starts as soon as it opens");
+            }));
+        }
+        private void WaitTick()
+        {
+            if (_waitApp.Length == 0) { EndWait(null); return; }
+            if (ClipRecorder.IsRecording) { EndWait(null); return; }   // something else started a recording
+            if (!string.Equals(ClipRecorder.PinnedApp, _waitApp, StringComparison.OrdinalIgnoreCase))
+            { EndWait("Capture source changed"); return; }               // the user picked another source → don't record by surprise
+            if (ClipRecorder.MissingPinnedApp().Length > 0) { _waitSeen = 0; return; }
+            if (++_waitSeen < 2) return;                                 // window is up — give it ~1 s to finish appearing (splash/first frame)
+            string app = _waitApp;
+            EndWait(null, notify: false);
+            DiagLog.Line("CLIP", "manual capture: " + app + " opened -> recording");
+            Toast(ToastKind.Success, "Recording " + app, "Started automatically when it opened");
+            StartManualRecord();
+        }
+        private void EndWait(string? cancelledReason, bool notify = true)
+        {
+            try { _waitTimer?.Stop(); _waitTimer?.Dispose(); } catch { }
+            _waitTimer = null;
+            bool was = _waitApp.Length > 0; _waitApp = "";
+            if (!was || !notify) return;
+            ClipRecorder.RaiseNotify("state", "{\"recording\":false}");
+            if (cancelledReason != null) Toast(ToastKind.Warning, "Stopped waiting", cancelledReason);
         }
         // Explicit start / stop (the source picker's manual-capture buttons + the title-bar Record button). Unlike the
         // toggle these can't flip the wrong way on a double click, and START works while the instant-replay ring is
@@ -370,7 +416,10 @@ namespace SpartaClips
         private int _startingRecord;
         public void StartManualRecord()
         {
-            if (ClipRecorder.IsRecording || System.Threading.Interlocked.Exchange(ref _startingRecord, 1) == 1) return;
+            if (ClipRecorder.IsRecording || _waitApp.Length > 0) return;
+            string missing = ClipRecorder.MissingPinnedApp();
+            if (missing.Length > 0) { BeginWaitForApp(missing); return; }
+            if (System.Threading.Interlocked.Exchange(ref _startingRecord, 1) == 1) return;
             Task.Run(async () =>
             {
                 try
@@ -383,7 +432,11 @@ namespace SpartaClips
                 finally { System.Threading.Volatile.Write(ref _startingRecord, 0); }
             });
         }
-        public void StopManualRecord() { Task.Run(() => { try { ClipRecorder.Stop(); } catch { } }); }   // Done() → re-arm via Notify
+        public void StopManualRecord()
+        {
+            if (_waitApp.Length > 0 && !ClipRecorder.IsRecording) { _ui.BeginInvoke(new Action(() => EndWait("Cancelled"))); return; }
+            Task.Run(() => { try { ClipRecorder.Stop(); } catch { } });   // Done() → re-arm via Notify
+        }
         public void FireSaveReplay()
         {
             long now = Environment.TickCount64; if (now - _lastRepFire < 800) return; _lastRepFire = now;
