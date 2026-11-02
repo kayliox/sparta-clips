@@ -693,7 +693,9 @@ body.app-idle .gal-rec-dot,body.app-idle .gal-armed .gal-rec-dot{animation-play-
 .clip-playhead{position:absolute;top:0;bottom:0;width:2px;background:#fff;left:0;pointer-events:none;box-shadow:0 0 4px rgba(0,0,0,.8)}
 #clipPlayhead::before{content:"";position:absolute;top:-7px;left:-5px;width:12px;height:12px;border-radius:50%;background:#fff;box-shadow:0 0 0 3px rgba(255,59,78,.35),0 1px 4px rgba(0,0,0,.6)}   /* grab knob: the timeline is the scrub bar now */
 body.clip-dragging .clip-playhead{display:none}
-body.clip-trim-drag .clip-playhead{display:block}   /* trim-handle drag: the playhead rides the handle (shows where the clip starts/ends) */
+body.clip-trim-drag .clip-playhead{display:block}
+#clipPlayhead.snap{background:var(--accent)}   /* stuck to a trim edge while scrubbing */
+#clipPlayhead.snap::before{background:var(--accent);box-shadow:0 0 0 3px rgba(255,255,255,.55),0 1px 4px rgba(0,0,0,.6)}   /* trim-handle drag: the playhead rides the handle (shows where the clip starts/ends) */
 .clip-handle{position:absolute;top:-3px;bottom:-3px;width:14px;margin-left:-7px;border-radius:var(--r-sm);background:var(--accent);cursor:ew-resize;z-index:2}
 .clip-handle::after{content:"";position:absolute;left:6px;top:50%;width:2px;height:16px;margin-top:-8px;background:rgba(0,0,0,.45)}
 .clip-tl-row{display:flex;justify-content:space-between;align-items:center;margin-top:.25rem;font-size:var(--text-xs);color:var(--text-2);font-variant-numeric:tabular-nums}

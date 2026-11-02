@@ -2343,25 +2343,40 @@
   // The trim timeline doubles as the scrub bar (before: a separate seek slider above it did the dragging). Press +
   // drag scrubs with the same pause → coalesced-scrub → snap-to-keyframe → resume path the slider used.
   { const tl = $("#clipTl"); if (tl) {
-      let wasPlaying = false, dragging = false;
-      const tAt = x => clipTlPos(x) * (_clipDur || 0);
+      let wasPlaying = false, dragging = false, snapped = false;
+      // Magnetic trim edges: within SNAP_PX of the trim start/end (once a trim exists) the playhead STICKS to it,
+      // frame-exact — so scrubbing lands precisely on where the clip begins/ends. The knob turns accent while stuck.
+      const SNAP_PX = 10;
+      const tAt = x => {
+        const dur = _clipDur || 0, t = clipTlPos(x) * dur;
+        snapped = false;
+        if (dur > 0 && clipSelActive() && _tlRect && _tlRect.width) {
+          const px = s => s / dur * _tlRect.width;
+          for (const edge of [_clipIn, _clipOut]) if (Math.abs(px(t) - px(edge)) <= SNAP_PX) { snapped = true; return edge; }
+        }
+        return t;
+      };
+      const markSnap = () => { const ph = $("#clipPlayhead"); if (ph) ph.classList.toggle("snap", dragging && snapped); };
+      const show = () => { _trimPin = _t; updatePlayheads(); markSnap(); const c = $("#clipTimeCur"); if (c) c.textContent = clipDur(_t); };
       tl.addEventListener("pointerdown", e => {
         if (e.button !== 0 || e.target.closest(".clip-handle")) return;
         dragging = true; _seekDrag = true; wasPlaying = _playing; _tlRect = tl.getBoundingClientRect();
         const v = ensureVideo(); if (v && !v.paused) v.pause(); pauseClipAudio();
         try { tl.setPointerCapture(e.pointerId); } catch {}
-        _t = tAt(e.clientX); scrubSeek(_t); updatePlayheads(); const c = $("#clipTimeCur"); if (c) c.textContent = clipDur(_t);
+        _t = tAt(e.clientX); scrubSeek(_t); show();   // the playhead stays under the cursor (pinned), the preview catches up
       });
       tl.addEventListener("pointermove", e => {
         if (!dragging) return;
-        _t = tAt(e.clientX); scrubSeek(_t); updatePlayheads(); const c = $("#clipTimeCur"); if (c) c.textContent = clipDur(_t);
+        _t = tAt(e.clientX); scrubSeek(_t); show();
       });
       const finish = e => {
         if (!dragging) return;
-        dragging = false; _seekDrag = false; _tlRect = null;
-        _t = snapKf(tAt(e.clientX)); _seekPending = -1; _atEnd = false;
-        if (_video) { try { _video.currentTime = _t; } catch {} if (wasPlaying) _video.play().catch(() => {}); }
-        updatePlayheads();
+        dragging = false; _seekDrag = false;
+        const t = tAt(e.clientX), stuck = snapped;
+        _tlRect = null; _trimPin = -1; markSnap();
+        if (stuck) seekExact(t);   // released on a trim edge → exactly on it (no keyframe snap away)
+        else { _t = snapKf(t); _seekPending = -1; _atEnd = false; if (_video) { try { _video.currentTime = _t; } catch {} } updatePlayheads(); }
+        if (_video && wasPlaying) _video.play().catch(() => {});
       };
       tl.addEventListener("pointerup", finish);
       tl.addEventListener("pointercancel", finish);
