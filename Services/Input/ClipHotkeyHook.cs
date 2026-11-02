@@ -25,15 +25,16 @@ namespace SpartaClips
 
         private static IntPtr _hook;
         private static HookProc? _proc;   // hold a ref so the delegate isn't GC'd while the hook is live
-        private static uint _recMods, _recVk, _repMods, _repVk, _markMods, _markVk;   // 0 vk = unbound
-        private static Action? _onRecord, _onReplay, _onMark;
+        private static uint _recMods, _recVk, _repMods, _repVk, _markMods, _markVk, _pauseMods, _pauseVk;   // 0 vk = unbound
+        private static Action? _onRecord, _onReplay, _onMark, _onPause;
 
         /// <summary>Set the current combos (from the user's settings) + the actions to fire. Call before Install/on change.</summary>
         public static void Configure(uint recMods, uint recVk, uint repMods, uint repVk, uint markMods, uint markVk,
-            Action onRecord, Action onReplay, Action onMark)
+            uint pauseMods, uint pauseVk, Action onRecord, Action onReplay, Action onMark, Action onPause)
         {
             _recMods = recMods; _recVk = recVk; _repMods = repMods; _repVk = repVk; _markMods = markMods; _markVk = markVk;
-            _onRecord = onRecord; _onReplay = onReplay; _onMark = onMark;
+            _pauseMods = pauseMods; _pauseVk = pauseVk;
+            _onRecord = onRecord; _onReplay = onReplay; _onMark = onMark; _onPause = onPause;
         }
 
         /// <summary>Install on the CALLING thread (must pump messages — call from the UI thread). Idempotent. Returns
@@ -73,13 +74,15 @@ namespace SpartaClips
                     if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
                     {
                         uint vk = (uint)Marshal.ReadInt32(lParam);   // KBDLLHOOKSTRUCT.vkCode is the first field
-                        bool rep = _repVk != 0 && vk == _repVk, rec = _recVk != 0 && vk == _recVk, mark = _markVk != 0 && vk == _markVk;
-                        if (rep || rec || mark)
+                        bool rep = _repVk != 0 && vk == _repVk, rec = _recVk != 0 && vk == _recVk, mark = _markVk != 0 && vk == _markVk,
+                             pause = _pauseVk != 0 && vk == _pauseVk;
+                        if (rep || rec || mark || pause)
                         {
                             uint mods = CurMods();
                             if (rep && mods == _repMods) { Fire("save replay", _onReplay); return (IntPtr)1; }
                             if (rec && mods == _recMods) { Fire("record", _onRecord); return (IntPtr)1; }
                             if (mark && mods == _markMods) { Fire("mark", _onMark); return (IntPtr)1; }
+                            if (pause && mods == _pauseMods) { Fire("pause", _onPause); return (IntPtr)1; }
                         }
                     }
                 }

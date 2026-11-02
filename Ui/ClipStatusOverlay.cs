@@ -88,8 +88,9 @@ namespace SpartaClips
             try
             {
                 if (_form == null || !_form.Visible) return;
-                long sec = Math.Max(0, (Environment.TickCount64 - _startTick) / 1000);
-                _form.Label = "REC " + (sec / 60) + ":" + (sec % 60).ToString("00");
+                // The engine's clip-timeline clock (paused stretches excluded) — frozen + labelled while paused.
+                long sec = (long)ClipRecorder.RecElapsedSec;
+                _form.Label = (ClipRecorder.IsPaused ? "PAUSED " : "REC ") + (sec / 60) + ":" + (sec % 60).ToString("00");
                 _form.Invalidate();
                 // Keep it pinned above a game that re-asserts topmost focus.
                 try { var b = _form.Bounds; SetWindowPos(_form.Handle, new IntPtr(-1), b.X, b.Y, b.Width, b.Height, SWP_NOACTIVATE); } catch { }

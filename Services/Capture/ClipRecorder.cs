@@ -24,7 +24,9 @@ namespace SpartaClips
         public static bool IsRecording => _recording;
         /// <summary>Seconds since the current recording started (0 when idle) — lets a window opened MID-recording
         /// (hotkey start with no UI) show the true elapsed instead of counting from window-open.</summary>
-        public static double RecElapsedSec => _recording ? Math.Max(0, (Environment.TickCount64 - _recStartTick) / 1000.0) : 0;
+        /// <summary>Seconds of footage in the running recording — paused stretches EXCLUDED (= the clip's timeline).</summary>
+        public static double RecElapsedSec => _recording ? RecTimelineSec() : 0;
+        public static bool IsPaused => _recording && _paused;
 
         /// <summary>Live-engine snapshot for the diagnostic tools (tools/stress.py asserts invariants against this —
         /// e.g. "disarmed ⇒ no live recorder, no rotation timer, rings off, buffer not growing"). Read-only.</summary>
@@ -162,12 +164,55 @@ namespace SpartaClips
         // ── Mark-a-moment: a 3rd global hotkey drops a bookmark on the IN-PROGRESS full recording; written to the
         //    clip's .marks.json on save so the editor can show them (works with no window open). Ignored for replay. ──
         private static long _recStartTick;
+        // Manual-capture pause bookkeeping. Paused time is subtracted so the elapsed clock + mark-a-moment bookmarks
+        // follow the CLIP's timeline (the MP4 has no gap where the pause was).
+        private static volatile bool _paused;
+        private static long _pauseStartTick, _pausedTotalMs;
+        private static readonly object _pauseGate = new();
+        private static double RecTimelineSec()
+        {
+            long now = Environment.TickCount64;
+            long paused = _pausedTotalMs + (_paused ? now - _pauseStartTick : 0);
+            return Math.Max(0, (now - _recStartTick - paused) / 1000.0);
+        }
+        /// <summary>Pause the running manual recording (video + every audio sidecar together). False if not recording.</summary>
+        public static bool Pause()
+        {
+            lock (_pauseGate)
+            {
+                var rec = _rec;
+                if (!_recording || rec == null || _paused) return false;
+                try { rec.Pause(); }
+                catch (Exception ex) { DiagLog.Line("CLIP", "pause err: " + ex.Message); return false; }
+                _micSide.PauseSidecar(true); _chatSide.PauseSidecar(true); _gameSide.PauseSidecar(true);
+                _pauseStartTick = Environment.TickCount64; _paused = true;
+                DiagLog.Line("CLIP", "record paused at " + RecTimelineSec().ToString("F1") + " s");
+                Notify?.Invoke("state", "{\"recording\":true,\"paused\":true}");
+                return true;
+            }
+        }
+        public static bool Resume()
+        {
+            lock (_pauseGate)
+            {
+                var rec = _rec;
+                if (!_recording || rec == null || !_paused) return false;
+                try { rec.Resume(); }
+                catch (Exception ex) { DiagLog.Line("CLIP", "resume err: " + ex.Message); return false; }
+                _micSide.PauseSidecar(false); _chatSide.PauseSidecar(false); _gameSide.PauseSidecar(false);
+                _pausedTotalMs += Environment.TickCount64 - _pauseStartTick; _paused = false;
+                DiagLog.Line("CLIP", "record resumed");
+                Notify?.Invoke("state", "{\"recording\":true,\"paused\":false}");
+                return true;
+            }
+        }
+        public static void TogglePause() { if (_paused) Resume(); else Pause(); }
         private static readonly List<double> _marks = new();
         /// <summary>Hotkey action — bookmark the current instant of the running recording (offset from record start).</summary>
         public static void MarkMoment()
         {
             if (!_recording) { Notify?.Invoke("marknorec", "{}"); return; }
-            double sec = Math.Max(0, (Environment.TickCount64 - _recStartTick) / 1000.0);
+            double sec = RecTimelineSec();   // clip timeline — paused stretches excluded
             lock (_marks) _marks.Add(sec);
             Notify?.Invoke("marked", Newtonsoft.Json.JsonConvert.SerializeObject(new { t = sec }));
         }
@@ -400,6 +445,7 @@ namespace SpartaClips
                 if (_gamePid > 0) { _gameWav = Path.Combine(BufferDir, "game_" + DateTime.Now.Ticks + ".wav"); _gameSide.StartSidecar(_gameWav); }
                 _ = ClipFfmpeg.EnsureAsync();   // warm up the post-processing engine so the first save uses ffmpeg, not the fallback
                 _recStartTick = Environment.TickCount64; lock (_marks) _marks.Clear();   // reset the mark-a-moment buffer for this recording
+                _paused = false; _pausedTotalMs = 0;
                 _recording = true;
                 DiagLog.Line("CLIP", "record start -> " + Path.GetFileName(path));
                 Notify?.Invoke("state", "{\"recording\":true}");
@@ -451,7 +497,7 @@ namespace SpartaClips
             // its fresh sidecars deleted. after: only the finished instance is disposed; a new Start() is untouched.
             var rec = _rec; _rec = null;
             double[] marks = SnapshotMarks();
-            _recording = false;
+            _recording = false; _paused = false;
             RestoreGameProfile();   // hand the engine back its global fps/bitrate/res for the next replay-arm / recording
             StopDiskMonitor();
             _micSide.StopSidecar(ok); _chatSide.StopSidecar(ok);   // finalize (keep) the sidecars on success; drop partials on failure

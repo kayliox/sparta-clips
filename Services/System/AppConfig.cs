@@ -109,13 +109,14 @@ namespace SpartaClips
 
         // ── Runtime prefs the tray core needs ──
         // Hotkeys are stored as {ctrl,alt,shift,win,vk}; convert to MOD flags (ALT 1 · CTRL 2 · SHIFT 4 · WIN 8) + vk.
-        public static (uint recMods, uint recVk, uint repMods, uint repVk, uint markMods, uint markVk) Hotkeys()
+        public static (uint recMods, uint recVk, uint repMods, uint repVk, uint markMods, uint markVk, uint pauseMods, uint pauseVk) Hotkeys()
         {
             var s = Settings();
             var (rm, rv) = HkOf(s["recHotkey"] as JObject, 0x78);   // default Ctrl+Alt+F9
             var (pm, pv) = HkOf(s["repHotkey"] as JObject, 0x79);   // default Ctrl+Alt+F10
             var (mm, mv) = HkOf(s["markHotkey"] as JObject, 0x77);  // default Ctrl+Alt+F8 (mark-a-moment)
-            return (rm, rv, pm, pv, mm, mv);
+            var (am, av) = HkOf(s["pauseHotkey"] as JObject, 0x7A); // default Ctrl+Alt+F11 (pause / resume a manual capture)
+            return (rm, rv, pm, pv, mm, mv, am, av);
         }
         private static (uint mods, uint vk) HkOf(JObject? hk, uint defVk)
         {

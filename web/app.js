@@ -64,6 +64,10 @@
       stopClipRecord:   ()           => call(b => b.StopClipRecord()),
       isClipRecording:  ()           => call(b => b.IsClipRecording()),
       recElapsedSec:    ()           => call(b => b.RecElapsedSec()),
+      startManualCapture: (game)     => call(b => b.StartManualCapture(String(game || ""))),
+      stopManualCapture:  ()         => call(b => b.StopManualCapture()),
+      pauseManualCapture: (on)       => call(b => b.PauseManualCapture(!!on)),
+      isClipPaused:       ()         => call(b => b.IsClipPaused()),
       armReplay:        (game)       => call(b => b.ArmReplay(String(game || ""))),
       disarmReplay:     ()           => call(b => b.DisarmReplay()),
       saveReplay:       ()           => call(b => b.SaveReplay()),
@@ -255,7 +259,7 @@
       captureEncoder: "h264", captureMic: false, captureSepMic: false, captureChat: false, captureCapGB: 0,
       captureMicDevice: "", captureChatDevice: "", replayEnabled: true, replayLen: 30, replayChime: true,
       autoHighlight: false, autoClip: false, clipFolder: "", clipFill: false, clipMicMuted: false, galCardScale: 100,
-      recHotkey: { ctrl: true, alt: true, vk: 0x78 }, repHotkey: { ctrl: true, alt: true, vk: 0x79 }, markHotkey: { ctrl: true, alt: true, vk: 0x77 },
+      recHotkey: { ctrl: true, alt: true, vk: 0x78 }, repHotkey: { ctrl: true, alt: true, vk: 0x79 }, markHotkey: { ctrl: true, alt: true, vk: 0x77 }, pauseHotkey: { ctrl: true, alt: true, vk: 0x7A },
       dualScreen: null, theme: "spartan",
       armPolicy: "always", autostart: false, autostartElevated: false, releaseUiOnClose: true, overlayEnabled: true, autoUpdate: true,
       gameProfiles: [],
@@ -416,17 +420,44 @@
   }
 
   // ── recording-elapsed timer: ticks ONLY while recording AND the window is open (no other pollers) ──
-  let _recTick = null, _recStart = 0;
-  // Reset the epoch ONLY on the idle→recording transition — updateClipRecUI re-invokes this on every render, and an
-  // unconditional reset restarted the visible elapsed timer at 0:00 on any background re-render mid-recording.
-  function startRecTimer() { if (!_recTick) { _recStart = Date.now(); _recTick = setInterval(paintRecElapsed, 1000); } paintRecElapsed(); }
+  // The clock is the CLIP's timeline (paused stretches excluded): a local model { base seconds at base time, paused }
+  // re-synced from the engine (RecElapsedSec) on every state change + window open, so it never drifts or counts a pause.
+  let _recTick = null, _recBaseSec = 0, _recBaseAt = 0, _recPaused = false;
+  function recElapsedNow() { return _recPaused ? _recBaseSec : _recBaseSec + Math.max(0, (Date.now() - _recBaseAt) / 1000); }
+  // Reset the model ONLY on the idle→recording transition — updateClipRecUI re-invokes this on every render, and an
+  // unconditional reset restarted the visible timer at 0:00 on any background re-render mid-recording.
+  function startRecTimer() { if (!_recTick) { _recBaseSec = 0; _recBaseAt = Date.now(); _recTick = setInterval(paintRecElapsed, 500); } paintRecElapsed(); }
   function stopRecTimer() { if (_recTick) { clearInterval(_recTick); _recTick = null; } paintRecElapsed(); }
-  function paintRecElapsed() {
-    const el = $("#galRecElapsed"); if (!el) return;
-    if (!_recording) { el.textContent = ""; return; }
-    const s = Math.max(0, Math.floor((Date.now() - _recStart) / 1000));
-    el.textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  function syncRecElapsed() {
+    if (!_recording) return;
+    Promise.resolve(clipsNative.recElapsedSec()).then(v => { const s = +v || 0; _recBaseSec = s; _recBaseAt = Date.now(); paintRecElapsed(); }).catch(() => {});
   }
+  function paintRecElapsed() {
+    const s = Math.floor(recElapsedNow()), txt = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+    const pill = $("#tbRecTimer"), pt = $("#tbRecTimerTxt"), ct = $("#srcCapTime");
+    if (pill) { pill.hidden = !_recording; pill.classList.toggle("paused", _recording && _recPaused); }
+    if (pt) pt.textContent = (_recPaused ? "Paused " : "") + txt;
+    if (ct) { ct.textContent = _recording ? txt : "0:00"; ct.classList.toggle("live", _recording && !_recPaused); ct.classList.toggle("paused", _recording && _recPaused); }
+  }
+  // Source-popover manual-capture buttons follow the engine state (idle: Start · recording: Pause + Stop).
+  function updateCapControls() {
+    const st = $("#srcCapStart"), pa = $("#srcCapPause"), sp = $("#srcCapStop"), hint = $("#srcCapHint");
+    if (st) st.disabled = _recording;
+    if (pa) { pa.disabled = !_recording; pa.classList.toggle("paused", _recording && _recPaused); const l = pa.querySelector(".cap-pause-lbl"); if (l) l.textContent = _recPaused ? "Resume" : "Pause"; }
+    if (sp) sp.disabled = !_recording;
+    if (hint) hint.textContent = !_recording ? "Record the selected source right now." : _recPaused ? "Paused — Resume to keep recording, Stop to save." : "Recording — Stop saves it to your clips.";
+  }
+  function startManualCapture() {
+    if (_recording) return;
+    clipsNative.startManualCapture(curGameTitle());
+    showToast("Recording", "Manual capture started — Stop saves it to your clips.");
+  }
+  function stopManualCapture() { if (_recording) clipsNative.stopManualCapture(); }
+  function togglePauseCapture() { if (_recording) clipsNative.pauseManualCapture(!_recPaused); }
+  { const b = $("#srcCapStart"); if (b) b.addEventListener("click", startManualCapture); }
+  { const b = $("#srcCapPause"); if (b) b.addEventListener("click", togglePauseCapture); }
+  { const b = $("#srcCapStop"); if (b) b.addEventListener("click", stopManualCapture); }
+  { const b = $("#tbRecTimer"); if (b) b.addEventListener("click", () => { if (typeof openSourcePicker === "function") openSourcePicker($("#tbSource")); }); }
 
   // ══════════════════════════════════════════════════════════════════════════════════════════════════
   //  LIFTED FROM SPARTA DOCK — Game Capture settings pane. spartaNative → clipsNative throughout.
@@ -568,26 +599,34 @@
     return "—";
   }
   function hkLabel(hk) { if (!hk) return "Click to set"; if (!hk.vk) return "Off"; const p = []; if (hk.ctrl) p.push("Ctrl"); if (hk.alt) p.push("Alt"); if (hk.shift) p.push("Shift"); if (hk.win) p.push("Win"); p.push(hkVkName(hk.vk)); return p.join(" + "); }
-  const HK_DEFAULTS = { recHotkey: { ctrl: true, alt: true, vk: 0x78 }, repHotkey: { ctrl: true, alt: true, vk: 0x79 }, markHotkey: { ctrl: true, alt: true, vk: 0x77 } };
+  const HK_DEFAULTS = { recHotkey: { ctrl: true, alt: true, vk: 0x78 }, repHotkey: { ctrl: true, alt: true, vk: 0x79 }, markHotkey: { ctrl: true, alt: true, vk: 0x77 }, pauseHotkey: { ctrl: true, alt: true, vk: 0x7A } };
   function resetHotkey(key) { state.settings[key] = Object.assign({}, HK_DEFAULTS[key]); save(); refreshHotkeyLabels(); pushClipHotkeys(); showToast("Hotkey reset", hkLabel(HK_DEFAULTS[key])); }
   function clearHotkey(key) { state.settings[key] = { vk: 0 }; save(); refreshHotkeyLabels(); pushClipHotkeys(); showToast("Hotkey cleared", "That action has no hotkey now."); }
   function hkMods(hk) { return (hk.alt ? 1 : 0) | (hk.ctrl ? 2 : 0) | (hk.shift ? 4 : 0) | (hk.win ? 8 : 0); }
   function recHk() { return state.settings.recHotkey || { ctrl: true, alt: true, vk: 0x78 }; }
   function repHk() { return state.settings.repHotkey || { ctrl: true, alt: true, vk: 0x79 }; }
   function markHk() { return state.settings.markHotkey || { ctrl: true, alt: true, vk: 0x77 }; }
+  function pauseHk() { return state.settings.pauseHotkey || { ctrl: true, alt: true, vk: 0x7A }; }
   function pushClipHotkeys() {
-    const r = recHk(), p = repHk(), m = markHk();
-    return clipsNative.setClipHotkeys(JSON.stringify({ recordMods: hkMods(r), recordVk: r.vk | 0, replayMods: hkMods(p), replayVk: p.vk | 0, markMods: hkMods(m), markVk: m.vk | 0 }));
+    const r = recHk(), p = repHk(), m = markHk(), a = pauseHk();
+    return clipsNative.setClipHotkeys(JSON.stringify({ recordMods: hkMods(r), recordVk: r.vk | 0, replayMods: hkMods(p), replayVk: p.vk | 0, markMods: hkMods(m), markVk: m.vk | 0, pauseMods: hkMods(a), pauseVk: a.vk | 0 }));
   }
   function refreshHotkeyLabels() {
     const a = $("#capRecHotkey"); if (a && !a._listening) a.textContent = hkLabel(recHk());
     const b = $("#capRepHotkey"); if (b && !b._listening) b.textContent = hkLabel(repHk());
     const mk = $("#capMarkHotkey"); if (mk && !mk._listening) mk.textContent = hkLabel(markHk());
+    const ph = $("#capPauseHotkey"); if (ph && !ph._listening) ph.textContent = hkLabel(pauseHk());
     const rec = recHk(), rep = repHk();
     // Mirror the live bindings into the help copy + HUD tooltips so they never lie after a rebind.
     const rh = $("#repHkHint"); if (rh) rh.textContent = (rep && rep.vk) ? hkLabel(rep) : "your Save-replay hotkey";
     const sr = $("#galSaveReplay"); if (sr) sr.title = (rep && rep.vk) ? "Save the last few seconds (" + hkLabel(rep) + ")" : "Save the last few seconds";
     const rb = $("#galRecBtn"); if (rb) rb.title = (rec && rec.vk) ? "Start / stop recording (" + hkLabel(rec) + ")" : "Start / stop recording";
+    // Manual-capture buttons (source popover) + the title-bar timer: every tooltip names its live hotkey.
+    const hk = (h) => (h && h.vk) ? "Hotkey: " + hkLabel(h) : "No hotkey set (Settings → Capture)";
+    const st = $("#srcCapStart"); if (st) st.title = "Start recording the selected source\n" + hk(rec);
+    const pa = $("#srcCapPause"); if (pa) pa.title = "Pause / resume — the paused part is left out of the clip\n" + hk(pauseHk());
+    const sp = $("#srcCapStop"); if (sp) sp.title = "Stop and save the recording\n" + hk(rec);
+    const tt = $("#tbRecTimer"); if (tt) tt.title = "Manual capture — click for Pause / Stop\nStart / stop: " + ((rec && rec.vk) ? hkLabel(rec) : "no hotkey") + "\nPause / resume: " + (pauseHk().vk ? hkLabel(pauseHk()) : "no hotkey");
   }
   function bindHotkeyButton(btnId, key) {
     const btn = $(btnId); if (!btn) return;
@@ -1061,6 +1100,9 @@
     { const b = $("#capRecHotkeyClear"); if (b) b.addEventListener("click", () => clearHotkey("recHotkey")); }
     { const b = $("#capRepHotkeyReset"); if (b) b.addEventListener("click", () => resetHotkey("repHotkey")); }
     { const b = $("#capRepHotkeyClear"); if (b) b.addEventListener("click", () => clearHotkey("repHotkey")); }
+    bindHotkeyButton("#capPauseHotkey", "pauseHotkey");
+    { const b = $("#capPauseHotkeyReset"); if (b) b.addEventListener("click", () => resetHotkey("pauseHotkey")); }
+    { const b = $("#capPauseHotkeyClear"); if (b) b.addEventListener("click", () => clearHotkey("pauseHotkey")); }
     bindHotkeyButton("#capMarkHotkey", "markHotkey");
     { const b = $("#capMarkHotkeyReset"); if (b) b.addEventListener("click", () => resetHotkey("markHotkey")); }
     { const b = $("#capMarkHotkeyClear"); if (b) b.addEventListener("click", () => clearHotkey("markHotkey")); }
@@ -1136,7 +1178,7 @@
   let _pendingAuto = null;
   window.onCapture = (ev, detail) => {
     try {
-      if (ev === "state") { _recording = !!(detail && detail.recording); updateClipRecUI(); }
+      if (ev === "state") { _recording = !!(detail && detail.recording); _recPaused = _recording && !!(detail && detail.paused); updateClipRecUI(); syncRecElapsed(); }
       else if (ev === "replay") { _replayArmed = !!(detail && detail.armed); updateClipRecUI(); }   // HUD-only state — a full gallery rebuild on every arm/disarm (each game focus change under armPolicy "game") was wasted work
       else if (ev === "saving") { _replaySaving = true; if (_view === "gallery") renderLibrary(); }
       else if (ev === "saved") {
@@ -1155,7 +1197,7 @@
       else if (ev === "segprogress") { if (detail && detail.total > 1) showToast("Exporting segments…", "Done " + detail.done + " of " + detail.total); }
       else if (ev === "transcoding") { showToast("Encoding AV1…", "Finishing your clip — it'll appear in the gallery shortly."); }
       else if (ev === "av1fail") { showToast("AV1 encode failed", "Saved the recording as H.264 instead."); }
-      else if (ev === "recfail") { _recording = false; updateClipRecUI(); showToast("Recording failed", (detail && detail.reason) ? String(detail.reason).slice(0, 140) : "The capture engine couldn't record. Try a different encoder in Settings, or check the logs."); if (_view === "gallery") renderLibrary(); }
+      else if (ev === "recfail") { _recording = false; _recPaused = false; updateClipRecUI(); showToast("Recording failed", (detail && detail.reason) ? String(detail.reason).slice(0, 140) : "The capture engine couldn't record. Try a different encoder in Settings, or check the logs."); if (_view === "gallery") renderLibrary(); }
       else if (ev === "micfail") { const chat = detail && detail.track === "chat"; showToast(chat ? "Chat audio" : "Microphone", "Couldn't capture the " + (chat ? "chat device" : "mic") + " — check Windows privacy settings (Microphone) or that the device is connected."); }
       else if (ev === "disklow") { showToast("Disk almost full", "Recording stopped — what was captured has been saved."); }
       else if (ev === "trimfail") { _replaySaving = false; showToast("Save failed", "Couldn't write the clip from that selection."); if (_view === "gallery") renderLibrary(); }
@@ -1171,8 +1213,8 @@
     clipsNative.setReplayEnabled(state.settings.replayEnabled === true);
   }
   function toggleClipRecord() {
-    if (_recording) clipsNative.stopClipRecord();
-    else { clipsNative.startClipRecord(curGameTitle()); showToast("Recording", "Capturing — press again (or your record hotkey) to stop."); }
+    if (_recording) clipsNative.stopManualCapture();
+    else { clipsNative.startManualCapture(curGameTitle()); showToast("Recording", "Capturing — press again (or your record hotkey) to stop."); }
   }
   function updateClipRecUI() {
     // Instant-replay owns the capture device, so manual Record & Save-replay are mutually exclusive (ClipRecorder.Start
@@ -1184,6 +1226,7 @@
     const sr = $("#galSaveReplay"); if (sr) sr.hidden = !armed;
     const om = $("#tbOmega"); if (om) { om.classList.toggle("rec", _recording); om.classList.toggle("armed", armed); }
     if (_recording) startRecTimer(); else stopRecTimer();
+    updateCapControls();
   }
   // Game_dd.MM.yyyy.HH.mm[_replay|_clip|_combined|_recovered][_n].mp4 → { game, date }. The suffixes are what C#
   // actually appends (replay saves, editor trims/combines, AV1-salvage) — without them, every replay fell through to
@@ -2468,8 +2511,8 @@
         // then correct the elapsed epoch to the true start (updateClipRecUI's timer starts counting from window-open).
         clipsNative.isClipRecording().then(async r => {
           if (!r) return;
-          _recording = true; updateClipRecUI();
-          try { const el = +(await clipsNative.recElapsedSec()) || 0; if (el > 0) { _recStart = Date.now() - el * 1000; paintRecElapsed(); } } catch {}
+          try { _recPaused = !!(await clipsNative.isClipPaused()); } catch {}
+          _recording = true; updateClipRecUI(); syncRecElapsed();
         }).catch(() => {}),
       ]);
     } else { try { await detectHevcNative(); } catch {} }

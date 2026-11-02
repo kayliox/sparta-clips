@@ -59,12 +59,14 @@
     <div class="tb-spacer"></div>
     <!-- Always-visible capture HUD: Record / REC m:ss / Save replay (armed). Bound once at boot; state via updateClipRecUI. -->
     <div class="tb-hud" id="tbHud">
-      <button class="hud-rec" id="galRecBtn" title="Start / stop recording"><span class="gal-rec-dot"></span><span class="gal-rec-label">Record</span><span class="gal-rec-elapsed" id="galRecElapsed"></span></button>
+      <button class="hud-rec" id="galRecBtn" title="Start / stop recording"><span class="gal-rec-dot"></span><span class="gal-rec-label">Record</span></button>
       <button class="hud-rec armed" id="galSaveReplay" title="Save the last few seconds" hidden><span class="gal-rec-dot"></span><span>Save replay</span></button>
       <!-- Live "Capturing <app>" status + capture-source picker (Auto / Desktop / pin a window). Filled by pollCaptureTarget. -->
       <button class="hud-rec hud-src" id="tbSource" title="Capture source">
         <span class="gal-target-dot off"></span><span class="gal-target-txt">Capture source</span>
       </button>
+      <!-- Manual-capture timer beside the capsule (clip-timeline time: frozen while paused). Click = the capture controls. -->
+      <button class="hud-rec hud-timer" id="tbRecTimer" hidden><span class="gal-rec-dot"></span><span class="hud-timer-txt" id="tbRecTimerTxt">0:00</span></button>
     </div>
     <div class="tb-spacer"></div>
     <div class="tb-winctrls">
@@ -79,6 +81,16 @@
 
   <!-- Capture-source popover (anchored under #tbSource by JS). "Window capture" expands into a live-preview grid. -->
   <div class="src-pop" id="srcPop" hidden>
+    <!-- Manual capture: records the source selected below right away (suspends instant replay, re-arms it on stop). -->
+    <div class="src-cap" id="srcCap">
+      <div class="src-caphead"><b>Manual capture</b><span id="srcCapHint">Record the selected source right now.</span></div>
+      <div class="src-capbar">
+        <button class="src-capbtn cap-start" id="srcCapStart"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/></svg><span>Start</span></button>
+        <button class="src-capbtn cap-pause" id="srcCapPause" disabled><svg class="ico-pause" viewBox="0 0 24 24"><rect x="7" y="6" width="3.6" height="12" rx="1"/><rect x="13.4" y="6" width="3.6" height="12" rx="1"/></svg><svg class="ico-resume" viewBox="0 0 24 24"><path d="M8 5.8v12.4a.8.8 0 0 0 1.2.7l9.6-6.2a.8.8 0 0 0 0-1.4L9.2 5.1A.8.8 0 0 0 8 5.8z"/></svg><span class="cap-pause-lbl">Pause</span></button>
+        <button class="src-capbtn cap-stop" id="srcCapStop" disabled><svg viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></svg><span>Stop</span></button>
+        <span class="src-captime" id="srcCapTime">0:00</span>
+      </div>
+    </div>
     <button class="src-mode active" data-src="auto"><b>Automatic</b><span>Follows your capture settings — game window or display.</span></button>
     <button class="src-mode" data-src="display"><b>Desktop</b><span>Always capture the whole display.</span></button>
     <button class="src-mode" data-src="window"><b>Window capture</b><span>Pin one app's window — ideal for showcasing an app.</span></button>
@@ -263,6 +275,14 @@
                   <button class="kbd-hint kbd-set" id="capMarkHotkey" title="Click, then press a key combo">Ctrl + Alt + F8</button>
                   <button class="tiny-btn" id="capMarkHotkeyReset" title="Reset to default">Reset</button>
                   <button class="tiny-btn" id="capMarkHotkeyClear" title="Clear — disable this hotkey">Clear</button>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="label"><strong>Pause / resume hotkey</strong><span>Pause the running manual capture and pick it up again — the paused stretch is left out of the clip. Click to rebind.</span></div>
+                <div class="hotkey-ctrls">
+                  <button class="kbd-hint kbd-set" id="capPauseHotkey" title="Click, then press a key combo">Ctrl + Alt + F11</button>
+                  <button class="tiny-btn" id="capPauseHotkeyReset" title="Reset to default">Reset</button>
+                  <button class="tiny-btn" id="capPauseHotkeyClear" title="Clear — disable this hotkey">Clear</button>
                 </div>
               </div>
             </div>

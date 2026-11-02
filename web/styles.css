@@ -153,6 +153,35 @@ input[type=checkbox]{accent-color:var(--accent)}
 .src-pop{position:fixed;z-index:400;width:380px;background:var(--surface-1);border:1px solid var(--line-2);
   border-radius:var(--r-lg);box-shadow:var(--sh-3);padding:.45rem;animation:fadeUp 140ms ease both;
   -webkit-app-region:no-drag;app-region:no-drag}
+/* Manual capture (top of the source popover). Colour/background feedback only — no transforms (see .win-btn note). */
+.src-cap{padding:.35rem .3rem .55rem;margin-bottom:.35rem;border-bottom:1px solid var(--line)}
+.src-caphead{display:flex;flex-direction:column;gap:.1rem;padding:0 .2rem .45rem}
+.src-caphead b{color:var(--text);font-size:var(--text-sm);font-weight:650}
+.src-caphead span{color:var(--text-3);font-size:var(--text-xs)}
+.src-capbar{display:flex;align-items:center;gap:.4rem}
+.src-capbtn{display:inline-flex;align-items:center;gap:.35rem;padding:.4rem .75rem;border-radius:var(--r-pill);border:1px solid var(--line-2);
+  background:var(--surface-2);color:var(--text);font-size:var(--text-xs);font-weight:650;cursor:pointer;line-height:1;
+  transition:background var(--transition),border-color var(--transition),color var(--transition)}
+.src-capbtn svg{width:13px;height:13px;fill:currentColor;stroke:none}
+.src-capbtn:hover:not(:disabled){background:var(--surface-3);border-color:var(--line-2)}
+.src-capbtn:disabled{opacity:.38;cursor:default}
+.src-capbtn.cap-start{background:var(--grad-primary);border-color:transparent;color:#fff}
+.src-capbtn.cap-start:hover:not(:disabled){filter:brightness(1.08);background:var(--grad-primary)}
+.src-capbtn.cap-start:disabled{background:var(--surface-2);border-color:var(--line-2);color:var(--text-2)}
+.src-capbtn.cap-pause .ico-resume{display:none}
+.src-capbtn.cap-pause.paused{color:var(--amber);border-color:rgba(var(--amber-rgb),.45);background:rgba(var(--amber-rgb),.10)}
+.src-capbtn.cap-pause.paused .ico-pause{display:none}
+.src-capbtn.cap-pause.paused .ico-resume{display:inline}
+.src-capbtn.cap-stop:not(:disabled){color:var(--accent);border-color:var(--accent-line)}
+.src-captime{margin-left:auto;font-family:var(--mono);font-size:.8rem;font-variant-numeric:tabular-nums;color:var(--text-3);padding-right:.25rem}
+.src-captime.live{color:var(--accent)}
+.src-captime.paused{color:var(--amber)}
+/* Title-bar timer pill beside the capture capsule: red + pulsing dot while recording, amber + still dot while paused. */
+.hud-timer{background:rgba(var(--accent-rgb),.16);border-color:var(--accent-line);color:var(--accent);box-shadow:none;padding:.32rem .7rem}
+.hud-timer .gal-rec-dot{background:var(--accent);animation:galpulse 1s ease-in-out infinite}
+.hud-timer .hud-timer-txt{font-family:var(--mono);font-size:.78rem;font-variant-numeric:tabular-nums}
+.hud-timer.paused{background:rgba(var(--amber-rgb),.12);border-color:rgba(var(--amber-rgb),.45);color:var(--amber)}
+.hud-timer.paused .gal-rec-dot{background:var(--amber);animation:none}
 .src-mode{display:flex;flex-direction:column;gap:.15rem;width:100%;text-align:left;border:1px solid transparent;
   background:none;border-radius:var(--r);padding:.55rem .7rem;cursor:pointer;transition:background var(--transition)}
 .src-mode:hover{background:var(--surface-2)}

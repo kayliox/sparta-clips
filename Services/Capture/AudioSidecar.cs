@@ -67,10 +67,16 @@ namespace SpartaClips
         private WaveFileWriter? _writer;
         private string _path = "";
         private readonly object _lock = new object();
+        // Manual-capture PAUSE: drop incoming samples so the WAV skips the paused stretch exactly like the video does
+        // (the recorder's Pause leaves no gap in the MP4 timeline — a sidecar that kept writing would drift late by
+        // every pause). The capture device stays open, so resuming is instant.
+        private volatile bool _sidePaused;
+        public void PauseSidecar(bool paused) { _sidePaused = paused; }
 
         public void StartSidecar(string wavPath)
         {
             StopSidecar(false);   // never leave a previous capture/writer running — two captures into one writer doubled the audio
+            _sidePaused = false;
             try
             {
                 _path = wavPath;
@@ -82,7 +88,7 @@ namespace SpartaClips
                 {
                     lock (_lock)
                     {
-                        if (_writer == null) return;
+                        if (_writer == null || _sidePaused) return;
                         try { WritePcm16(fmt, a.Buffer, a.BytesRecorded, b => _writer!.WriteByte(b), (buf, off, cnt) => _writer!.Write(buf, off, cnt)); } catch { }
                     }
                 };

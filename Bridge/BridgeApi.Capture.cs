@@ -134,7 +134,7 @@ namespace SpartaClips
             {
                 var h = JsonConvert.DeserializeObject<HotkeysDto>(json); if (h == null) return "failed";
                 // before: _form.SetClipHotkeys(...). after: TrayCore owns the hotkeys so they persist with the window closed.
-                return (TrayCore.Instance?.SetClipHotkeys(h.recordMods, h.recordVk, h.replayMods, h.replayVk, h.markMods, h.markVk) ?? false) ? "ok" : "failed";
+                return (TrayCore.Instance?.SetClipHotkeys(h.recordMods, h.recordVk, h.replayMods, h.replayVk, h.markMods, h.markVk, h.pauseMods, h.pauseVk) ?? false) ? "ok" : "failed";
             }
             catch { return "failed"; }
         }
@@ -146,6 +146,8 @@ namespace SpartaClips
             public uint replayVk { get; set; }
             public uint markMods { get; set; }
             public uint markVk { get; set; }
+            public uint pauseMods { get; set; }
+            public uint pauseVk { get; set; }
         }
         // Read + consume the mid-record bookmark sidecar (written by the mark-a-moment hotkey) → a JSON array of
         // second offsets via window.onClipMarks(name, arr); deletes the sidecar so marks import exactly once.
@@ -176,6 +178,12 @@ namespace SpartaClips
         }
         public void StopClipRecord() { Task.Run(() => { try { ClipRecorder.Stop(); } catch { } }); }
         public bool IsClipRecording() { try { return ClipRecorder.IsRecording; } catch { return false; } }
+        // Manual capture (source picker + title-bar Record): start works over an armed instant-replay ring (TrayCore
+        // suspends + re-arms it); pause/resume freezes video + audio sidecars together.
+        public void StartManualCapture(string gameName) { EnsureCaptureWired(); ClipRecorder.LastGameName = gameName ?? ""; TrayCore.Instance?.StartManualRecord(); }
+        public void StopManualCapture() { TrayCore.Instance?.StopManualRecord(); }
+        public void PauseManualCapture(bool pause) { Task.Run(() => { try { if (pause) ClipRecorder.Pause(); else ClipRecorder.Resume(); } catch { } }); }
+        public bool IsClipPaused() { try { return ClipRecorder.IsPaused; } catch { return false; } }
         // Live-engine snapshot (JSON) for the diagnostic tools — see ClipRecorder.DiagJson.
         public string GetEngineDiag() { try { return ClipRecorder.DiagJson(); } catch { return "{}"; } }
         public string GetCaptureTarget() { try { return ClipRecorder.CaptureTargetJson(); } catch { return "{\"state\":\"idle\"}"; } }   // gallery "Capturing <app>" line (polled ~1 Hz while visible)

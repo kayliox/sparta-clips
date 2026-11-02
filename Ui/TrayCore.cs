@@ -309,8 +309,8 @@ namespace SpartaClips
         // ── Hotkeys (LL keyboard hook — fires even over a fullscreen anti-cheat game) ──
         private void InstallHotkeys()
         {
-            var (rm, rv, pm, pv, mm, mv) = AppConfig.Hotkeys();
-            ClipHotkeyHook.Configure(rm, rv, pm, pv, mm, mv, FireRecordToggle, FireSaveReplay, FireMarkMoment);
+            var (rm, rv, pm, pv, mm, mv, am, av) = AppConfig.Hotkeys();
+            ClipHotkeyHook.Configure(rm, rv, pm, pv, mm, mv, am, av, FireRecordToggle, FireSaveReplay, FireMarkMoment, FirePauseToggle);
             if (!ClipHotkeyHook.Install()) Toast(ToastKind.Warning, "Hotkeys unavailable", "Try running Sparta Clips as administrator");
         }
         private void Toast(ToastKind kind, string title, string sub) { try { _ui.BeginInvoke(new Action(() => ClipToast.Show(kind, title, sub))); } catch { } }
@@ -337,10 +337,17 @@ namespace SpartaClips
             return (game.Length > 0 ? game + "  ·  " : "") + (replay || secs > 0 ? len : "");
         }
         // Rebind from the settings UI; persisted by the web layer into config.json (state). Returns whether the hook is active.
-        public bool SetClipHotkeys(uint recMods, uint recVk, uint repMods, uint repVk, uint markMods, uint markVk)
+        public bool SetClipHotkeys(uint recMods, uint recVk, uint repMods, uint repVk, uint markMods, uint markVk, uint pauseMods, uint pauseVk)
         {
-            try { ClipHotkeyHook.Configure(recMods, recVk, repMods, repVk, markMods, markVk, FireRecordToggle, FireSaveReplay, FireMarkMoment); return ClipHotkeyHook.Install(); }
+            try { ClipHotkeyHook.Configure(recMods, recVk, repMods, repVk, markMods, markVk, pauseMods, pauseVk, FireRecordToggle, FireSaveReplay, FireMarkMoment, FirePauseToggle); return ClipHotkeyHook.Install(); }
             catch { return false; }
+        }
+        // Pause / resume hotkey -> the running manual capture (no-op when nothing is recording).
+        private long _lastPauseFire;
+        public void FirePauseToggle()
+        {
+            long now = Environment.TickCount64; if (now - _lastPauseFire < 400) return; _lastPauseFire = now;
+            Task.Run(() => { try { if (ClipRecorder.IsRecording) ClipRecorder.TogglePause(); } catch { } });
         }
         // Mark-a-moment hotkey → bookmark the running recording (no-op with a toast if nothing is recording).
         private long _lastMarkFire;
@@ -355,18 +362,28 @@ namespace SpartaClips
         public void FireRecordToggle()
         {
             long now = Environment.TickCount64; if (now - _lastRecFire < 800) return; _lastRecFire = now;
+            if (ClipRecorder.IsRecording) StopManualRecord(); else StartManualRecord();
+        }
+        // Explicit start / stop (the source picker's manual-capture buttons + the title-bar Record button). Unlike the
+        // toggle these can't flip the wrong way on a double click, and START works while the instant-replay ring is
+        // armed: the ring is suspended for the recording and re-armed when it ends (Done → recording:false → above).
+        private int _startingRecord;
+        public void StartManualRecord()
+        {
+            if (ClipRecorder.IsRecording || System.Threading.Interlocked.Exchange(ref _startingRecord, 1) == 1) return;
             Task.Run(async () =>
             {
                 try
                 {
-                    if (ClipRecorder.IsRecording) { ClipRecorder.Stop(); return; }   // Done() → re-arm via Notify
                     if (ClipRecorder.IsReplayArmed) { _suspendedForRecord = true; await ClipRecorder.DisarmAsync(); }
                     if (!ClipRecorder.Start(ClipRecorder.LastGameName) && _suspendedForRecord)
                     { _suspendedForRecord = false; _ui.BeginInvoke(new Action(ApplyArmPolicy)); }   // start failed → restore the ring
                 }
                 catch { }
+                finally { System.Threading.Volatile.Write(ref _startingRecord, 0); }
             });
         }
+        public void StopManualRecord() { Task.Run(() => { try { ClipRecorder.Stop(); } catch { } }); }   // Done() → re-arm via Notify
         public void FireSaveReplay()
         {
             long now = Environment.TickCount64; if (now - _lastRepFire < 800) return; _lastRepFire = now;

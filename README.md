@@ -36,7 +36,7 @@ your clip and drop it straight into Discord.
 |  |  |
 |---|---|
 | ⏪ **Instant replay** | Something awesome just happened? Press **Ctrl + Alt + F10** and the last 30 seconds are saved. No need to be recording beforehand. |
-| 🎬 **Record anything** | Press **Ctrl + Alt + F9** to start and stop a full recording. |
+| 🎬 **Record anything** | Press **Ctrl + Alt + F9** to start and stop a full recording (**Ctrl + Alt + F11** pauses / resumes), or use **Manual capture** in the capture-source menu at the top. |
 | 🔊 **Sound that just works** | Records your game's audio at full volume, even if your headset software turns it down, plus your mic and Discord voice on their own tracks if you want them. |
 | ✂️ **Easy editing** | Trim the boring bits, mute a track, mark the highlights. No video skills needed. |
 | 💬 **One-drag Discord sharing** | Pick a size (10 MB free, up to 500 MB with Nitro), then drag the clip straight into a Discord chat. Smaller sizes are automatically optimised so they still look sharp. |
