@@ -1666,6 +1666,7 @@
       _video.addEventListener("seeked", () => {
         _seeking = false;
         if (_seekPending >= 0) { const p = _seekPending; _seekPending = -1; scrubSeek(p); return; }   // fulfil the latest coalesced target
+        if (_trimPin >= 0) { _t = _trimPin; updatePlayheads(); return; }   // dragging a trim handle: the playhead rides the handle, not the keyframe the preview landed on
         _t = _video.currentTime || 0; updatePlayheads(); if (_playing) { syncMic(); syncChat(); }
       });
       _video.addEventListener("click", () => { const willPlay = _video.paused; togglePlay(); clipFlash(willPlay); });
@@ -1823,12 +1824,22 @@
     if (_video) { try { _video.currentTime = _t; } catch {} }
     updatePlayheads(); updatePlayBtn();
   }
+  // Frame-exact seek (no keyframe snap) — the trim handles: the playhead must sit exactly ON the trim point, and Play
+  // must start at the trim's first frame. before: seekClip snapped to the nearest keyframe, leaving the playhead
+  // floating up to a GOP (~0.5-2.6 s) away from the handle.
+  function seekExact(sec) {
+    _atEnd = false; _seekPending = -1;
+    _t = Math.max(0, Math.min(_clipDur || sec || 0, sec || 0));
+    stopMicSrc(); stopChatSrc();
+    if (_video) { try { _video.currentTime = _t; } catch {} }
+    updatePlayheads(); updatePlayBtn();
+  }
   function togglePlay() {
     const v = ensureVideo(); if (!v) return;
     if (v.paused) {
       // Restart from the start / trim-in when we're at the end — tracked by a flag (currentTime is unreliable: the
       // trim-stop / keyframe-snap can leave it ~0.5s short of the real end, so a value comparison misses it).
-      if (_atEnd || v.ended) seekClip(clipSelActive() ? _clipIn : 0);
+      if (_atEnd || v.ended) seekExact(clipSelActive() ? _clipIn : 0);
       v.play().catch(() => {});
     } else v.pause();
   }
@@ -2220,21 +2231,32 @@
   function beginTlDrag() { const tl = $("#clipTl"); _tlRect = tl ? tl.getBoundingClientRect() : null; document.body.classList.add("clip-dragging"); }
   function endTlDrag() { _tlRect = null; document.body.classList.remove("clip-dragging"); }
   function clipTlPos(clientX) { const r = _tlRect || (($("#clipTl") || null) && $("#clipTl").getBoundingClientRect()); if (!r || !r.width) return 0; return Math.max(0, Math.min(1, (clientX - r.left) / r.width)); }
+  // The playhead follows a dragged trim handle (it marks where the trimmed clip starts / ends); -1 = no handle drag.
+  let _trimPin = -1;
   function bindClipHandle(id, which) {
     const h = $(id); if (!h) return;
     h.addEventListener("pointerdown", e => {
       e.preventDefault(); e.stopPropagation(); try { h.setPointerCapture(e.pointerId); } catch {}
-      beginTlDrag();
+      beginTlDrag(); document.body.classList.add("clip-trim-drag");
+      if (_video && !_video.paused) _video.pause();   // a running clip would drag the playhead off the handle
+      const edge = () => which === "in" ? _clipIn : _clipOut;
+      _trimPin = edge(); _t = _trimPin; updatePlayheads();
       const move = ev => {
         const dur = _clipDur || 0, t = clipTlPos(ev.clientX) * dur;
         if (which === "in") _clipIn = Math.max(0, Math.min(t, _clipOut - 0.2));
         else _clipOut = Math.min(dur, Math.max(t, _clipIn + 0.2));
         if (_hasMic && !_micManual) { _micTlStart = _clipIn; _micTlEnd = _clipOut; }
         if (_hasChat && !_chatManual) { _chatTlStart = _clipIn; _chatTlEnd = _clipOut; }
-        scrubSeek(which === "in" ? _clipIn : _clipOut);   // smooth preview while dragging
+        _trimPin = edge();
+        scrubSeek(_trimPin);   // smooth preview while dragging
+        _t = _trimPin; updatePlayheads();   // playhead glued to the handle
         renderClipTl();
       };
-      const up = () => { endTlDrag(); document.removeEventListener("pointermove", move); document.removeEventListener("pointerup", up); document.removeEventListener("pointercancel", up); seekClip(which === "in" ? _clipIn : _clipOut); };
+      const up = () => {
+        endTlDrag(); document.body.classList.remove("clip-trim-drag");
+        document.removeEventListener("pointermove", move); document.removeEventListener("pointerup", up); document.removeEventListener("pointercancel", up);
+        _trimPin = -1; seekExact(edge());   // land exactly on the trim point (frame-exact preview + playhead)
+      };
       document.addEventListener("pointermove", move); document.addEventListener("pointerup", up); document.addEventListener("pointercancel", up);
     });
   }
