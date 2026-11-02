@@ -701,17 +701,64 @@ namespace SpartaClips
         public static IDisposable CancelWith(System.Threading.CancellationToken ct) { var prev = _cancel.Value; _cancel.Value = ct; return new CancelScope(prev); }
         private sealed class CancelScope : IDisposable { private readonly System.Threading.CancellationToken _prev; public CancelScope(System.Threading.CancellationToken prev) => _prev = prev; public void Dispose() => _cancel.Value = _prev; }
 
+        // ── Progress scope (AsyncLocal → flows through every await): ffmpeg runs inside it stream "-progress" key=values on
+        //    stdout; out_time is summed across the job's passes (smart cut head/middle/tail, per-segment encodes) against
+        //    the job's total output seconds → a monotonic 0..0.99 fraction (1.0 = the caller's "saved"). ──
+        private sealed class ProgressSink { public Action<double>? Cb; public double Total, Acc, Best; public long Last; public readonly object Gate = new(); }
+        private static readonly System.Threading.AsyncLocal<ProgressSink?> _prog = new();
+        public static IDisposable ReportProgress(Action<double> onFraction, double totalSec)
+        {
+            var prev = _prog.Value;
+            _prog.Value = totalSec > 0.05 ? new ProgressSink { Cb = onFraction, Total = totalSec } : null;
+            return new ProgScope(prev);
+        }
+        private sealed class ProgScope : IDisposable { private readonly ProgressSink? _prev; public ProgScope(ProgressSink? prev) => _prev = prev; public void Dispose() => _prog.Value = _prev; }
+        /// <summary>For every ffmpeg launcher: with a progress scope active, prefix "-progress pipe:1" (works regardless of
+        /// -loglevel) and tell the caller to redirect stdout.</summary>
+        internal static (string args, bool redirect) WithProgress(string args) => _prog.Value == null ? (args, false) : ("-progress pipe:1 -nostats " + args, true);
+        /// <summary>Pump a started ffmpeg's -progress stdout into the active scope (one call per ffmpeg pass).</summary>
+        internal static Task PumpProgress(Process p)
+        {
+            var s = _prog.Value; if (s == null) return Task.CompletedTask;
+            return Task.Run(async () =>
+            {
+                double passMax = 0;
+                try
+                {
+                    string? line;
+                    while ((line = await p.StandardOutput.ReadLineAsync()) != null)
+                    {
+                        if (!line.StartsWith("out_time_us=", StringComparison.Ordinal) && !line.StartsWith("out_time_ms=", StringComparison.Ordinal)) continue;   // both are µs
+                        if (!long.TryParse(line.AsSpan(line.IndexOf('=') + 1), out long us) || us <= 0) continue;
+                        double sec = us / 1e6; if (sec > passMax) passMax = sec;
+                        double f; bool fire = false;
+                        lock (s.Gate)
+                        {
+                            f = Math.Min(0.99, (s.Acc + sec) / s.Total);
+                            if (f > s.Best) { s.Best = f; long now = Environment.TickCount64; if (now - s.Last >= 120) { s.Last = now; fire = true; } }
+                        }
+                        if (fire) try { s.Cb?.Invoke(f); } catch { }
+                    }
+                }
+                catch { }
+                lock (s.Gate) s.Acc += passMax;   // this pass is done: later passes continue from here
+            });
+        }
+
         private static async Task<bool> RunAsync(string ff, string args, string dst)
         {
             try
             {
-                var psi = new ProcessStartInfo(ff, args) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
+                var (pargs, redirect) = WithProgress(args);
+                var psi = new ProcessStartInfo(ff, pargs) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = redirect };
                 using var p = Process.Start(psi); if (p == null) return false;
                 if (!_userWaiting.Value) try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }   // background: never starve the game / WebView2 renderer
                 var ct = _cancel.Value;
                 using var killOnCancel = ct.CanBeCanceled ? ct.Register(() => { try { if (!p.HasExited) p.Kill(true); } catch { } }) : default;
+                var pump = redirect ? PumpProgress(p) : Task.CompletedTask;
                 string err = await p.StandardError.ReadToEndAsync();
                 await p.WaitForExitAsync();
+                try { await pump; } catch { }
                 bool ok = p.ExitCode == 0 && File.Exists(dst) && new FileInfo(dst).Length > 0;
                 if (!ok) { DiagLog.Line("CLIP", "ffmpeg exit " + p.ExitCode + ": " + Short(err)); TryDel(dst); }
                 return ok;

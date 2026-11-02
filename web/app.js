@@ -1202,6 +1202,7 @@
         showToast("Clip saved", nm); clipsNative.requestClips();   // one refresh — C# also pushes the fresh list once after "saved" (was 4 rebuilds per save)
       }
       else if (ev === "autoclip") { _pendingAuto = { label: (detail && detail.label) || "Highlight", at: Date.now() }; showToast("Auto-clip", "Highlight detected" + (detail && detail.label ? " · " + detail.label : "") + " — saving…"); }
+      else if (ev === "exportjob") { clipJobUi(detail || {}); }
       else if (ev === "segprogress") { if (detail && detail.total > 1) showToast("Exporting segments…", "Done " + detail.done + " of " + detail.total); }
       else if (ev === "transcoding") { showToast("Encoding AV1…", "Finishing your clip — it'll appear in the gallery shortly."); }
       else if (ev === "av1fail") { showToast("AV1 encode failed", "Saved the recording as H.264 instead."); }
@@ -1255,6 +1256,38 @@
   }
   // "Transformers Armada · Replay · 17:03" (date added when not today) — the editor title; the raw file name is
   // what Rename edits.
+  // ── Create-clip progress pill in the editor header (C# "exportjob": start → progress p 0..0.99 → done/fail) ──
+  // One job state, painted into every .job-pill (the gallery toolbar's right end — Create clip returns you there — and
+  // the editor header). The gallery header is re-rendered from a template, so it reads this state when it's rebuilt.
+  let _job = { state: "", p: 0, label: "", name: "", count: 1 }, _jobHideT = 0;
+  function jobPillHTML() {
+    return `<div class="job-pill" role="status" aria-live="polite" hidden><div class="job-fill"></div><span class="job-txt"></span><span class="job-pct"></span><button class="job-open" hidden>Open</button></div>`;
+  }
+  function paintJobPills() {
+    document.querySelectorAll(".job-pill").forEach(box => {
+      const fill = box.querySelector(".job-fill"), txt = box.querySelector(".job-txt"), pct = box.querySelector(".job-pct"), open = box.querySelector(".job-open");
+      const j = _job;
+      box.hidden = !j.state;
+      box.classList.toggle("indet", j.state === "start"); box.classList.toggle("done", j.state === "done"); box.classList.toggle("fail", j.state === "fail");
+      if (fill) fill.style.width = j.state === "progress" ? (j.p * 100).toFixed(1) + "%" : "0%";
+      if (txt) txt.textContent = j.state === "done" ? (j.count > 1 ? j.count + " clips ready" : "Clip ready")
+        : j.state === "fail" ? "Couldn't create the clip" : (j.label || "Creating clip") + "…";
+      if (pct) pct.textContent = j.state === "progress" ? Math.floor(j.p * 100) + "%" : "";
+      if (open) { open.hidden = !(j.state === "done" && j.name); if (!open._wired) { open._wired = true; open.addEventListener("click", openJobResult); } }
+    });
+  }
+  function openJobResult() {
+    const n = _job.name; _job = { state: "", p: 0, label: "", name: "", count: 1 }; paintJobPills();
+    if (n && _clips.some(c => c.name === n)) openClipPage(n); else showToast("Clip ready", "It's in the gallery under Edited.");
+  }
+  function clipJobUi(d) {
+    clearTimeout(_jobHideT);
+    if (d.state === "start") _job = { state: "start", p: 0, label: d.label || "Creating clip", name: "", count: 1 };
+    else if (d.state === "progress") { _job.state = "progress"; _job.p = Math.max(_job.p || 0, Math.min(0.99, +d.p || 0)); }
+    else if (d.state === "done") { _job.state = "done"; _job.name = d.name || ""; _job.count = d.count || 1; _jobHideT = setTimeout(() => { _job.state = ""; paintJobPills(); }, 9000); }
+    else if (d.state === "fail") { _job.state = "fail"; _jobHideT = setTimeout(() => { _job.state = ""; paintJobPills(); }, 6000); }
+    paintJobPills();
+  }
   function clipTitle(name) {
     const p = parseClip(name);
     if (!p.game) return String(name || "").replace(/\.[^.]+$/, "").replace(/_/g, " ");
@@ -1481,6 +1514,7 @@
         <button class="gal-btn ico" id="galOpenBtn" title="Open clips folder"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg></button>
       </div>
       ${storage}
+      ${jobPillHTML()}
     </div>`;
     const saving = _replaySaving
       ? `<div class="gal-grid"><div class="gal-card gal-saving" aria-busy="true"><div class="gal-thumb"><span class="gal-spinner"></span></div><div class="gal-meta"><div class="gal-name">Saving replay…</div><div class="gal-sub"><span class="gal-when">just now</span></div></div></div></div>`
@@ -1488,7 +1522,7 @@
     const body = shown.length
       ? groupClips(shown).map(g => `<div class="gal-group">${esc(g.label)}</div><div class="gal-grid">${g.items.map(galCardHTML).join("")}</div>`).join("")
       : ((_replaySaving || !_clipsLoaded) ? "" : `<div class="gal-empty"><div class="gal-empty-omega">Ω</div><h3>No clips yet</h3><p>Press <b>Save replay</b> in the title bar to grab the last moments — or turn Instant replay off in Settings for a manual <b>Record</b> button. New clips appear here automatically.</p><button class="gal-btn primary" id="galEmptySettings">Open capture settings</button></div>`);
-    host.innerHTML = `<div class="gallery${_galSelecting ? " selecting" : ""}" style="--gal-scale:${(((state.settings.galCardScale | 0) || 100) / 50)}">${header}${saving}${body}</div>`;
+    host.innerHTML = `<div class="gallery${_galSelecting ? " selecting" : ""}" style="--gal-scale:${(((state.settings.galCardScale | 0) || 100) / 50)}">${header}${saving}${body}</div>`; paintJobPills();   // the rebuilt toolbar shows a running Create-clip job
     host.scrollTop = prevScroll;
     updateClipRecUI();
     closeCardMenu();

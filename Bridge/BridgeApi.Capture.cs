@@ -349,12 +349,23 @@ namespace SpartaClips
 
         // Pure trim (no audio mix / volume change) → frame-exact smart cut: re-encode only the cut edges, copy the
         // middle (near-lossless + fast). AV1 keeps its codec via the AV1 compose path; H.264/H.265 use SmartCutAsync.
+        // Editor job progress → the header progress pill: window.onCapture("exportjob", {state: start|progress|done|fail}).
+        private void JobEvent(object o) { try { PostToWeb("window.onCapture && window.onCapture(\"exportjob\"," + JsonConvert.SerializeObject(o) + ")"); } catch { } }
+        private IDisposable JobProgress(double totalSec, string label)
+        {
+            JobEvent(new { state = "start", label });
+            return ClipFfmpeg.ReportProgress(f => JobEvent(new { state = "progress", p = Math.Round(f, 3) }), totalSec);
+        }
+        private void JobDone(string? outName, int count = 1) =>
+            JobEvent(outName != null ? new { state = "done", name = outName, count } : (object)new { state = "fail" });
+
         public void SmartCut(string name, double start, double end)
         {
             EnsureCaptureWired();
             Task.Run(async () =>
             {
                 string? outName = null;
+                using var _job = JobProgress(end - start, "Creating clip");
                 try
                 {
                     if (ClipLibrary.IsAv1Clip(name))
@@ -363,6 +374,7 @@ namespace SpartaClips
                         outName = await ClipLibrary.SmartCutAsync(name, start, end);
                 }
                 catch { }
+                JobDone(outName);
                 if (outName != null) PostToWeb("window.onCapture && window.onCapture(\"saved\"," + JsonConvert.SerializeObject(new { name = outName }) + ")");
                 else PostToWeb("window.onCapture && window.onCapture(\"trimfail\",{})");
             });
@@ -376,9 +388,11 @@ namespace SpartaClips
             Task.Run(async () =>
             {
                 string? outName = null;
+                ComposeDto o0; try { o0 = JsonConvert.DeserializeObject<ComposeDto>(optsJson) ?? new ComposeDto(); } catch { o0 = new ComposeDto(); }
+                using var _job = JobProgress(o0.vidOut - o0.vidIn, "Creating clip");
                 try
                 {
-                    var o = JsonConvert.DeserializeObject<ComposeDto>(optsJson) ?? new ComposeDto();
+                    var o = o0;
                     // AV1 sources can't go through MediaComposition (no MF AV1 decoder) → ffmpeg path.
                     if (ClipLibrary.IsAv1Clip(name))
                         outName = await ClipLibrary.ComposeAv1Async(name, o.vidIn, o.vidOut, o.vidVol, o.micOn, o.micIn, o.micOut, o.micOffset, o.micVol, o.chatOn, o.chatIn, o.chatOut, o.chatOffset, o.chatVol, ClipRecorder.Av1Kbps);
@@ -386,6 +400,7 @@ namespace SpartaClips
                         outName = await ClipLibrary.ComposeAsync(name, o.vidIn, o.vidOut, o.vidVol, o.micOn, o.micIn, o.micOut, o.micOffset, o.micVol, o.chatOn, o.chatIn, o.chatOut, o.chatOffset, o.chatVol);
                 }
                 catch { }
+                JobDone(outName);
                 if (outName != null) PostToWeb("window.onCapture && window.onCapture(\"saved\"," + JsonConvert.SerializeObject(new { name = outName }) + ")");
                 else PostToWeb("window.onCapture && window.onCapture(\"trimfail\",{})");
             });
@@ -439,6 +454,8 @@ namespace SpartaClips
                     var o = JsonConvert.DeserializeObject<SegExportDto>(optsJson);
                     var segs = o?.segments;
                     if (o == null || segs == null || segs.Length == 0) { Fail(); return; }
+                    double totalSec = 0; foreach (var sg in segs) totalSec += Math.Max(0, sg.@out - sg.@in);
+                    using var _job = JobProgress(totalSec, o.combine ? "Combining clips" : (segs.Length > 1 ? "Creating " + segs.Length + " clips" : "Creating clip"));
                     bool av1 = ClipLibrary.IsAv1Clip(name);
                     bool pure = o.vidVol > 0.999 && o.vidVol < 1.001 && !o.micOn && !o.chatOn;
 
@@ -448,11 +465,12 @@ namespace SpartaClips
                         for (int j = 0; j < segs.Length; j++) ranges[j] = (segs[j].@in, segs[j].@out);
                         string? outName = await ClipLibrary.CombineSegmentsAsync(name, ranges, o.vidVol, o.micOn, o.micIn, o.micOut, o.micOffset, o.micVol, o.chatOn, o.chatIn, o.chatOut, o.chatOffset, o.chatVol);
                         PostToWeb("window.onCapture && window.onCapture(\"segprogress\"," + JsonConvert.SerializeObject(new { done = 1, total = 1 }) + ")");
+                        JobDone(outName);
                         if (outName != null) Saved(outName); else Fail();
                         return;
                     }
 
-                    int done = 0; bool any = false;
+                    int done = 0; bool any = false; string? lastName = null;
                     foreach (var s in segs)
                     {
                         string? outName;
@@ -461,8 +479,9 @@ namespace SpartaClips
                         else outName = await ClipLibrary.ComposeAsync(name, s.@in, s.@out, o.vidVol, o.micOn, o.micIn, o.micOut, o.micOffset, o.micVol, o.chatOn, o.chatIn, o.chatOut, o.chatOffset, o.chatVol);
                         done++;
                         PostToWeb("window.onCapture && window.onCapture(\"segprogress\"," + JsonConvert.SerializeObject(new { done, total = segs.Length }) + ")");
-                        if (outName != null) { Saved(outName); any = true; }
+                        if (outName != null) { Saved(outName); any = true; lastName = outName; }
                     }
+                    JobDone(lastName, done);
                     if (!any) Fail();
                 }
                 catch (System.Exception ex) { DiagLog.Line("CLIP", "exportsegments err: " + ex.Message); Fail(); }

@@ -189,10 +189,13 @@ namespace SpartaClips
         {
             try
             {
-                var psi = new ProcessStartInfo(ff, args) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
+                var (pargs, redirect) = ClipFfmpeg.WithProgress(args);   // editor jobs report how far the encode is
+                var psi = new ProcessStartInfo(ff, pargs) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = redirect };
                 using var p = Process.Start(psi); if (p == null) return false;
+                var pump = redirect ? ClipFfmpeg.PumpProgress(p) : Task.CompletedTask;
                 string err = await p.StandardError.ReadToEndAsync();
                 await p.WaitForExitAsync();
+                try { await pump; } catch { }
                 // dst is the last quoted token in args
                 int q2 = args.LastIndexOf('"'); int q1 = q2 > 0 ? args.LastIndexOf('"', q2 - 1) : -1;
                 string dst = (q1 >= 0 && q2 > q1) ? args.Substring(q1 + 1, q2 - q1 - 1) : "";
