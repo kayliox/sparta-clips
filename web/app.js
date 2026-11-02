@@ -1791,9 +1791,10 @@
   // The in-page <video> sizes itself via CSS (no native overlay to place), so "tracking" now only redraws waveforms on resize.
   function startClipRectTracking() { window.addEventListener("resize", scheduleWaveRedraw); }
   function stopClipRectTracking() { window.removeEventListener("resize", scheduleWaveRedraw); if (_waveRaf) { cancelAnimationFrame(_waveRaf); _waveRaf = 0; } }
+  let _phVis = null;   // while scrubbing: the GLIDING drawn position (seconds) — eases toward _t instead of teleporting
   function updatePlayheads() {
     const dur = _clipDur || 0; if (dur <= 0) return;
-    const lp = Math.max(0, Math.min(100, (_t / dur) * 100)) + "%";
+    const lp = Math.max(0, Math.min(100, ((_phVis != null ? _phVis : _t) / dur) * 100)) + "%";
     const ph = $("#clipPlayhead"), mph = $("#clipMicPlayhead"), cph = $("#clipChatPlayhead");
     if (ph) ph.style.left = lp; if (mph) mph.style.left = lp; if (cph) cph.style.left = lp;
   }
@@ -2343,12 +2344,27 @@
   // The trim timeline doubles as the scrub bar (before: a separate seek slider above it did the dragging). Press +
   // drag scrubs with the same pause → coalesced-scrub → snap-to-keyframe → resume path the slider used.
   { const tl = $("#clipTl"); if (tl) {
-      let wasPlaying = false, dragging = false, snapped = false;
+      let wasPlaying = false, dragging = false, snapped = false, grabOff = 0;
+      // Glide: the drawn playhead eases toward the target with a ~30 ms time constant (frame-rate independent), so
+      // following the cursor and snapping onto / off a trim edge read as a smooth slide, not a teleporting image.
+      let glideRaf = 0, glideTs = 0;
+      const glide = (ts) => {
+        glideRaf = 0;
+        const dt = glideTs ? Math.min(50, ts - glideTs) : 16; glideTs = ts;
+        if (_phVis == null) _phVis = _t;
+        _phVis += (_t - _phVis) * (1 - Math.exp(-dt / 30));
+        const dur = _clipDur || 0;
+        if (Math.abs(_t - _phVis) < Math.max(0.001, dur * 0.00015)) _phVis = _t;
+        updatePlayheads();
+        if (dragging || _phVis !== _t) glideRaf = requestAnimationFrame(glide);
+        else { _phVis = null; glideTs = 0; }   // settled → back to direct drawing
+      };
+      const kickGlide = () => { if (!glideRaf) glideRaf = requestAnimationFrame(glide); };
       // Magnetic trim edges: within SNAP_PX of the trim start/end (once a trim exists) the playhead STICKS to it,
       // frame-exact — so scrubbing lands precisely on where the clip begins/ends. The knob turns accent while stuck.
       const SNAP_PX = 10;
       const tAt = x => {
-        const dur = _clipDur || 0, t = clipTlPos(x) * dur;
+        const dur = _clipDur || 0, t = clipTlPos(x + grabOff) * dur;
         snapped = false;
         if (dur > 0 && clipSelActive() && _tlRect && _tlRect.width) {
           const px = s => s / dur * _tlRect.width;
@@ -2357,10 +2373,17 @@
         return t;
       };
       const markSnap = () => { const ph = $("#clipPlayhead"); if (ph) ph.classList.toggle("snap", dragging && snapped); };
-      const show = () => { _trimPin = _t; updatePlayheads(); markSnap(); const c = $("#clipTimeCur"); if (c) c.textContent = clipDur(_t); };
+      const show = () => { _trimPin = _t; kickGlide(); markSnap(); const c = $("#clipTimeCur"); if (c) c.textContent = clipDur(_t); };
       tl.addEventListener("pointerdown", e => {
         if (e.button !== 0 || e.target.closest(".clip-handle")) return;
+        e.preventDefault();   // no text selection / native drag while scrubbing
+        const knob = e.target.closest("#clipPlayhead");
+        // Grabbed by the knob → keep the grab offset so the playhead doesn't hop to the exact pointer x.
+        grabOff = 0;
+        if (knob) { const pr = knob.getBoundingClientRect(); grabOff = (pr.left + pr.width / 2) - e.clientX; }
         dragging = true; _seekDrag = true; wasPlaying = _playing; _tlRect = tl.getBoundingClientRect();
+        if (_phVis == null) _phVis = _t;   // glide starts from where the playhead is drawn now
+        tl.classList.add("scrubbing"); document.body.classList.add("clip-scrubbing");
         const v = ensureVideo(); if (v && !v.paused) v.pause(); pauseClipAudio();
         try { tl.setPointerCapture(e.pointerId); } catch {}
         _t = tAt(e.clientX); scrubSeek(_t); show();   // the playhead stays under the cursor (pinned), the preview catches up
@@ -2373,10 +2396,12 @@
         if (!dragging) return;
         dragging = false; _seekDrag = false;
         const t = tAt(e.clientX), stuck = snapped;
-        _tlRect = null; _trimPin = -1; markSnap();
+        _tlRect = null; _trimPin = -1; markSnap(); grabOff = 0;
+        tl.classList.remove("scrubbing"); document.body.classList.remove("clip-scrubbing");
         if (stuck) seekExact(t);   // released on a trim edge → exactly on it (no keyframe snap away)
         else { _t = snapKf(t); _seekPending = -1; _atEnd = false; if (_video) { try { _video.currentTime = _t; } catch {} } updatePlayheads(); }
         if (_video && wasPlaying) _video.play().catch(() => {});
+        kickGlide();   // finish the slide onto the final position, then hand back to direct drawing
       };
       tl.addEventListener("pointerup", finish);
       tl.addEventListener("pointercancel", finish);
