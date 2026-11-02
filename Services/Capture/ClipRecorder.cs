@@ -461,6 +461,9 @@ namespace SpartaClips
             // call — the NRE then fired a spurious "Recording failed" toast for a recording that actually completed.
             var rec = _rec;
             if (!_recording || rec == null) return;
+            // Freeze the mic/chat/game sidecars NOW, so they end where the video ends. before: they kept writing until
+            // Done() (after the MP4 finalized — seconds on a long recording), so their tails overran the video.
+            _micSide.PauseSidecar(true); _chatSide.PauseSidecar(true); _gameSide.PauseSidecar(true);
             try { rec.Stop(); } catch (Exception ex) { DiagLog.Line("CLIP", "stop err: " + ex.Message); Done(false, "", ex.Message); }
         }
 
@@ -514,7 +517,7 @@ namespace SpartaClips
                 Notify?.Invoke("transcoding", "{}");
                 DisposeRec(rec);
                 _stopWaiter?.TrySetResult(true);   // the H.264 intermediate is safely on disk (startup salvage covers a quit mid-transcode)
-                System.Threading.Tasks.Task.Run(async () => { await FinishAv1Async(temp, final, marks, gameWav); });
+                System.Threading.Tasks.Task.Run(async () => { FitRecordingSidecars(temp, final); await FinishAv1Async(temp, final, marks, gameWav); });
                 return;
             }
 
@@ -527,7 +530,8 @@ namespace SpartaClips
                 string saved = path;
                 System.Threading.Tasks.Task.Run(async () =>
                 {
-                    try { await ClipFfmpeg.ReplaceAudioAsync(saved, gameWav, alignEnd: false); } catch { }
+                    FitRecordingSidecars(saved, saved);
+                    try { await ClipFfmpeg.ReplaceAudioAsync(saved, gameWav, alignEnd: true); } catch { }   // end-aligned estimate (see FitRecordingSidecars), then fine-tuned against the clip's own audio
                     TryDelete(gameWav);
                     WriteMarks(saved, marks); PruneToCap(); KickProxy(saved);
                     Notify?.Invoke("saved", Newtonsoft.Json.JsonConvert.SerializeObject(new { path = saved, name = Path.GetFileName(saved) }));
@@ -538,10 +542,15 @@ namespace SpartaClips
 
             if (ok && !string.IsNullOrEmpty(path))
             {
-                WriteMarks(path, marks);
-                PruneToCap();
-                KickProxy(path);
-                Notify?.Invoke("saved", Newtonsoft.Json.JsonConvert.SerializeObject(new { path, name = Path.GetFileName(path) }));
+                string saved = path;
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    FitRecordingSidecars(saved, saved);   // rewrites the WAVs → off the recorder's callback thread
+                    WriteMarks(saved, marks);
+                    PruneToCap();
+                    KickProxy(saved);
+                    Notify?.Invoke("saved", Newtonsoft.Json.JsonConvert.SerializeObject(new { path = saved, name = Path.GetFileName(saved) }));
+                });
             }
             Notify?.Invoke("state", "{\"recording\":false}");
             DisposeRec(rec);
@@ -562,7 +571,7 @@ namespace SpartaClips
         // Transcode the H.264 temp → AV1 at the final path. On failure, salvage the H.264 as the clip so nothing is lost.
         private static async System.Threading.Tasks.Task FinishAv1Async(string temp, string final, double[] marks, string gameWav = "")
         {
-            if (File.Exists(gameWav)) { try { await ClipFfmpeg.ReplaceAudioAsync(temp, gameWav, alignEnd: false); } catch { } TryDelete(gameWav); }
+            if (File.Exists(gameWav)) { try { await ClipFfmpeg.ReplaceAudioAsync(temp, gameWav, alignEnd: true); } catch { } TryDelete(gameWav); }
             bool done = false;
             try { if (await Av1Transcoder.EnsureAsync()) done = await Av1Transcoder.EncodeAsync(temp, final, Av1Kbps, _av1ForceSw, fast: true); }
             catch (Exception ex) { DiagLog.Line("CLIP", "av1 finish err: " + ex.Message); }
@@ -675,6 +684,9 @@ namespace SpartaClips
         // replay buffer only re-targets the foreground window when a new segment starts).
         private static IntPtr _capHwnd;
         private static string _capKind = "display";   // "window" | "display" | "dual"
+        /// <summary>The window a running manual recording captures (zero for display/dual capture) — the REC pill pins
+        /// itself to that window's monitor.</summary>
+        public static IntPtr CaptureWindow => _recording && _capKind == "window" ? _capHwnd : IntPtr.Zero;
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, string> _appNames = new();
         // Display name for a window's program: the exe's product name ("pcsx2-qt" → "PCSX2"); without one (many games ship
         // no version info, e.g. "TFTClient-Win64-Shipping") the window's own title ("TFT") when it's short; else the exe
@@ -1328,6 +1340,28 @@ namespace SpartaClips
         // Replay sidecar → exactly `vid` seconds lined up with the video: the ring ends at the save instant, which lands at
         // video time vid + lag (lag = the measured game-track correction). Keeps ring [len-vid-lag, len-lag], padding with
         // silence where that window runs off either end. lag 0 == TrimWavToTail.
+        // Full recordings: the sidecars start the instant Record() is called, but the video's first frame lands ~0.5-1 s
+        // later (capture + encoder start-up) — measured 750 ms: the chat track played ¾ s late against the video. Both now
+        // END together (sidecars frozen in Stop()), so keep each WAV's last `video duration` = the clip's timeline.
+        // Pauses are already cut from both. videoPath = the finished recording (the H.264 intermediate in AV1 mode);
+        // finalPath = where the sidecars live (beside the final clip).
+        private static void FitRecordingSidecars(string videoPath, string finalPath)
+        {
+            try
+            {
+                double vid = ClipLibrary.Mp4DurationSeconds(videoPath);
+                if (vid <= 0) return;
+                foreach (var wav in new[] { MicSidecar(finalPath), ChatSidecar(finalPath) })
+                {
+                    if (!File.Exists(wav)) continue;
+                    double len = 0; try { using var r = new NAudio.Wave.WaveFileReader(wav); len = r.TotalTime.TotalSeconds; } catch { }
+                    TrimWavToTail(wav, vid);
+                    if (len - vid >= 0.05) DiagLog.Line("CLIP", $"sidecar aligned: dropped {(len - vid) * 1000:0} ms of start-up head -> {Path.GetFileName(wav)}");
+                }
+            }
+            catch (Exception ex) { DiagLog.Line("CLIP", "sidecar align err: " + ex.Message); }
+        }
+
         private static void FitSidecar(string path, double vid, double lag)
         {
             if (Math.Abs(lag) < 0.001) { TrimWavToTail(path, vid); return; }
