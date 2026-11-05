@@ -50,10 +50,14 @@ namespace SpartaClips
         {
             try
             {
-                var psi = new System.Diagnostics.ProcessStartInfo(ff, args) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
+                var (pargs, redirect) = ClipFfmpeg.WithProgress(args);   // the progress pill (only the render pass reports out_time)
+                var psi = new System.Diagnostics.ProcessStartInfo(ff, pargs) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = redirect };
                 using var p = System.Diagnostics.Process.Start(psi); if (p == null) return false;
+                using var _kc = ClipFfmpeg.KillOnCancel(p);
+                var pump = redirect ? ClipFfmpeg.PumpProgress(p) : Task.CompletedTask;
                 string err = await p.StandardError.ReadToEndAsync();
                 await p.WaitForExitAsync();
+                try { await pump; } catch { }
                 if (p.ExitCode != 0) DiagLog.Line("EXPORT", "ffmpeg " + p.ExitCode + ": " + (err.Length > 180 ? err.Substring(0, 180) : err));
                 return p.ExitCode == 0;
             }

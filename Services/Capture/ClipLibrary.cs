@@ -216,6 +216,7 @@ namespace SpartaClips
             if (e - s < 0.2 || !await ClipFfmpeg.EnsureAsync()) { TryDelete(outPath); return null; }
             if (await ClipFfmpeg.SmartCutAsync(src, s, e, outPath)) { DiagLog.Line("CLIP", "smartcut -> " + outName); return outName; }
             // Fallback: full re-encode (frame-exact, always works) — the single-track ComposeAsync path, no audio mix.
+            if (ClipFfmpeg.CancelRequested) { TryDelete(outPath); return null; }
             if (await ClipFfmpeg.ComposeAsync(src, null, null, s, e, 1.0, false, 0, 0, 0, 1, false, 0, 0, 0, 1, outPath))
             { DiagLog.Line("CLIP", "smartcut fallback recode -> " + outName); return outName; }
             TryDelete(outPath); return null;
@@ -241,6 +242,7 @@ namespace SpartaClips
                     vidIn, vidOut, vidVol, micOn, micIn, micOut, micOffset, micVol, chatOn, chatIn, chatOut, chatOffset, chatVol, outPath))
             { DiagLog.Line("CLIP", "compose (ff) -> " + outName); return outName; }
 
+            if (ClipFfmpeg.CancelRequested) { TryDelete(outPath); return null; }   // cancelled — not "ffmpeg failed"
             // Fallback (ffmpeg unavailable): MediaComposition with the sidecars as background tracks.
             Windows.Storage.StorageFile? created = null;
             try

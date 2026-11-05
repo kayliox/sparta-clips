@@ -353,7 +353,7 @@ namespace SpartaClips
                 string? outName = null;
                 try { outName = await ClipLibrary.TrimAsync(name, start, end); } catch { }
                 if (outName != null) PostToWeb("window.onCapture && window.onCapture(\"saved\"," + JsonConvert.SerializeObject(new { name = outName }) + ")");
-                else PostToWeb("window.onCapture && window.onCapture(\"trimfail\",{})");
+                else if (!JobCancelled) PostToWeb("window.onCapture && window.onCapture(\"trimfail\",{})");
             });
         }
 
@@ -361,13 +361,43 @@ namespace SpartaClips
         // middle (near-lossless + fast). AV1 keeps its codec via the AV1 compose path; H.264/H.265 use SmartCutAsync.
         // Editor job progress → the header progress pill: window.onCapture("exportjob", {state: start|progress|done|fail}).
         private void JobEvent(object o) { try { PostToWeb("window.onCapture && window.onCapture(\"exportjob\"," + JsonConvert.SerializeObject(o) + ")"); } catch { } }
+        // Each job gets a cancel token (AsyncLocal → flows through the job's awaits into every ffmpeg launcher, which kills
+        // its process on cancel). CancelJob() cancels the newest running job — the one the progress pill shows.
+        private static readonly System.Threading.AsyncLocal<System.Threading.CancellationTokenSource?> _jobCts = new();
+        private System.Threading.CancellationTokenSource? _activeJob;
+        private static bool JobCancelled => _jobCts.Value?.IsCancellationRequested == true;
         private IDisposable JobProgress(double totalSec, string label)
         {
+            var cts = new System.Threading.CancellationTokenSource();
+            _jobCts.Value = cts; _activeJob = cts;
             JobEvent(new { state = "start", label });
-            return ClipFfmpeg.ReportProgress(f => JobEvent(new { state = "progress", p = Math.Round(f, 3) }), totalSec);
+            var prog = ClipFfmpeg.ReportProgress(f => JobEvent(new { state = "progress", p = Math.Round(f, 3) }), totalSec);
+            var cancel = ClipFfmpeg.CancelWith(cts.Token);
+            return new JobScope(this, cts, cancel, prog);
+        }
+        private sealed class JobScope : IDisposable
+        {
+            private readonly BridgeApi _b; private readonly System.Threading.CancellationTokenSource _cts; private readonly IDisposable _c, _p;
+            public JobScope(BridgeApi b, System.Threading.CancellationTokenSource cts, IDisposable c, IDisposable p) { _b = b; _cts = cts; _c = c; _p = p; }
+            public void Dispose()
+            {
+                _c.Dispose(); _p.Dispose();
+                System.Threading.Interlocked.CompareExchange(ref _b._activeJob, null, _cts);
+                _cts.Dispose();
+            }
+        }
+        public void CancelJob()
+        {
+            var cts = _activeJob; if (cts == null) return;
+            try { cts.Cancel(); DiagLog.Line("CLIP", "job cancelled by user"); } catch { }
         }
         private void JobDone(string? outName, int count = 1) =>
-            JobEvent(outName != null ? new { state = "done", name = outName, count } : (object)new { state = "fail" });
+            JobEvent(JobCancelled ? new { state = "cancelled" } : outName != null ? new { state = "done", name = outName, count } : (object)new { state = "fail" });
+        /// <summary>Open Explorer with an exported file selected (the "Show" button after Export).</summary>
+        public void RevealFile(string path)
+        {
+            try { if (System.IO.File.Exists(path)) System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = "explorer.exe", Arguments = "/select,\"" + path + "\"", UseShellExecute = true }); } catch { }
+        }
 
         public void SmartCut(string name, double start, double end)
         {
@@ -386,7 +416,7 @@ namespace SpartaClips
                 catch { }
                 JobDone(outName);
                 if (outName != null) PostToWeb("window.onCapture && window.onCapture(\"saved\"," + JsonConvert.SerializeObject(new { name = outName }) + ")");
-                else PostToWeb("window.onCapture && window.onCapture(\"trimfail\",{})");
+                else if (!JobCancelled) PostToWeb("window.onCapture && window.onCapture(\"trimfail\",{})");
             });
         }
 
@@ -412,7 +442,7 @@ namespace SpartaClips
                 catch { }
                 JobDone(outName);
                 if (outName != null) PostToWeb("window.onCapture && window.onCapture(\"saved\"," + JsonConvert.SerializeObject(new { name = outName }) + ")");
-                else PostToWeb("window.onCapture && window.onCapture(\"trimfail\",{})");
+                else if (!JobCancelled) PostToWeb("window.onCapture && window.onCapture(\"trimfail\",{})");
             });
         }
 
@@ -424,10 +454,16 @@ namespace SpartaClips
             Task.Run(async () =>
             {
                 bool ok = false;
+                ComposeDto o0; try { o0 = JsonConvert.DeserializeObject<ComposeDto>(optsJson) ?? new ComposeDto(); } catch { o0 = new ComposeDto(); }
+                bool gif = string.Equals(format, "gif", StringComparison.OrdinalIgnoreCase);
+                if (!gif && !outPath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) outPath += ".mp4";
+                if (gif && !outPath.EndsWith(".gif", StringComparison.OrdinalIgnoreCase)) outPath += ".gif";
+                // before: no progress at all — a 13-minute export sat for ~8 min behind one "Exporting…" toast.
+                using var _job = JobProgress(o0.vidOut - o0.vidIn, gif ? "Exporting GIF" : "Exporting MP4");   // GIF: the palette pass reports no time (pill shimmers), the render pass fills 0..99%
                 try
                 {
-                    var o = JsonConvert.DeserializeObject<ComposeDto>(optsJson) ?? new ComposeDto();
-                    if (string.Equals(format, "gif", StringComparison.OrdinalIgnoreCase))
+                    var o = o0;
+                    if (gif)
                         ok = await ClipExport.ExportGifAsync(name, outPath, o.vidIn, o.vidOut, o.gifFps, o.gifWidth);
                     else
                     {
@@ -445,6 +481,9 @@ namespace SpartaClips
                     }
                 }
                 catch (Exception ex) { DiagLog.Line("EXPORT", "err: " + ex.Message); }
+                if (JobCancelled) { JobDone(null); return; }   // renders go to a temp first → the chosen path is untouched
+                JobEvent(ok ? new { state = "done", path = outPath } : (object)new { state = "fail" });
+                DiagLog.Line("EXPORT", (ok ? "exported -> " : "export FAILED -> ") + outPath);
                 PostToWeb("window.onExport && window.onExport(" + (ok ? "true" : "false") + "," + JsonConvert.SerializeObject(outPath) + ")");
             });
         }
@@ -456,7 +495,7 @@ namespace SpartaClips
         {
             EnsureCaptureWired();
             void Saved(string n) => PostToWeb("window.onCapture && window.onCapture(\"saved\"," + JsonConvert.SerializeObject(new { name = n }) + ")");
-            void Fail() => PostToWeb("window.onCapture && window.onCapture(\"trimfail\",{})");
+            void Fail() { if (!JobCancelled) PostToWeb("window.onCapture && window.onCapture(\"trimfail\",{})"); }
             Task.Run(async () =>
             {
                 try
@@ -483,6 +522,7 @@ namespace SpartaClips
                     int done = 0; bool any = false; string? lastName = null;
                     foreach (var s in segs)
                     {
+                        if (JobCancelled) break;   // Cancel stops the batch; clips already made stay
                         string? outName;
                         if (av1) outName = await ClipLibrary.ComposeAv1Async(name, s.@in, s.@out, o.vidVol, o.micOn, o.micIn, o.micOut, o.micOffset, o.micVol, o.chatOn, o.chatIn, o.chatOut, o.chatOffset, o.chatVol, ClipRecorder.Av1Kbps);
                         else if (pure) outName = await ClipLibrary.SmartCutAsync(name, s.@in, s.@out);
@@ -493,6 +533,7 @@ namespace SpartaClips
                     }
                     JobDone(lastName, done);
                     if (!any) Fail();
+                    else if (JobCancelled) PostToWeb("window.onCapture && window.onCapture(\"saved\"," + JsonConvert.SerializeObject(new { name = lastName }) + ")");
                 }
                 catch (System.Exception ex) { DiagLog.Line("CLIP", "exportsegments err: " + ex.Message); Fail(); }
             });

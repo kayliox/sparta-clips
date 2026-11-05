@@ -701,6 +701,16 @@ namespace SpartaClips
         private static readonly System.Threading.AsyncLocal<System.Threading.CancellationToken> _cancel = new();
         public static IDisposable CancelWith(System.Threading.CancellationToken ct) { var prev = _cancel.Value; _cancel.Value = ct; return new CancelScope(prev); }
         private sealed class CancelScope : IDisposable { private readonly System.Threading.CancellationToken _prev; public CancelScope(System.Threading.CancellationToken prev) => _prev = prev; public void Dispose() => _cancel.Value = _prev; }
+        /// <summary>The current job was cancelled — callers skip their fallbacks (a re-encode / MediaComposition retry
+        /// after the user pressed Cancel would quietly redo the whole job).</summary>
+        public static bool CancelRequested => _cancel.Value.IsCancellationRequested;
+        /// <summary>Kill `p` if the current job is cancelled (immediately when it already is). For launchers outside
+        /// RunAsync (AV1 transcoder, GIF export).</summary>
+        internal static IDisposable KillOnCancel(Process p)
+        {
+            var ct = _cancel.Value;
+            return ct.CanBeCanceled ? ct.Register(() => { try { if (!p.HasExited) p.Kill(true); } catch { } }) : default(System.Threading.CancellationTokenRegistration);
+        }
 
         // ── Progress scope (AsyncLocal → flows through every await): ffmpeg runs inside it stream "-progress" key=values on
         //    stdout; out_time is summed across the job's passes (smart cut head/middle/tail, per-segment encodes) against

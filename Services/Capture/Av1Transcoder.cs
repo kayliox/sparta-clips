@@ -114,6 +114,7 @@ namespace SpartaClips
             string common = "-map 0:v:0 -map 0:a:0? -pix_fmt yuv420p -c:a copy -movflags +faststart";
             string Cmd(string e, bool f) => $"-nostdin -y -hide_banner -loglevel error -i \"{src}\" {EncArgs(e, kbps, f)} {common} \"{dst}\"";
             if (await RunAsync(ff, Cmd(enc, fast))) return true;
+            if (ClipFfmpeg.CancelRequested) return false;
             if (enc != "libsvtav1" && _list.Contains("libsvtav1")) { _hardware = false; DiagLog.Line("CLIP", "av1 hw failed → libsvtav1"); if (await RunAsync(ff, Cmd("libsvtav1", fast))) return true; enc = "libsvtav1"; }
             if (fast) { DiagLog.Line("CLIP", "av1 fast retry → standard preset"); return await RunAsync(ff, Cmd(enc, false)); }   // an unsupported fast-param must never silently drop AV1
             return false;
@@ -181,6 +182,7 @@ namespace SpartaClips
             }
 
             if (await RunAsync(ff, args)) return true;
+            if (ClipFfmpeg.CancelRequested) return false;
             if (enc != "libsvtav1" && _list.Contains("libsvtav1")) { _hardware = false; return await RunAsync(ff, args.Replace(EncArgs(enc, kbps, false), EncArgs("libsvtav1", kbps, false))); }
             return false;
         }
@@ -192,6 +194,7 @@ namespace SpartaClips
                 var (pargs, redirect) = ClipFfmpeg.WithProgress(args);   // editor jobs report how far the encode is
                 var psi = new ProcessStartInfo(ff, pargs) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = redirect };
                 using var p = Process.Start(psi); if (p == null) return false;
+                using var _kc = ClipFfmpeg.KillOnCancel(p);   // the progress pill's Cancel
                 var pump = redirect ? ClipFfmpeg.PumpProgress(p) : Task.CompletedTask;
                 string err = await p.StandardError.ReadToEndAsync();
                 await p.WaitForExitAsync();

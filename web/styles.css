@@ -643,6 +643,11 @@ body.app-idle .gal-rec-dot,body.app-idle .gal-armed .gal-rec-dot{animation-play-
 .job-pct{position:relative;font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--text);padding-right:.4rem}
 .job-open{position:relative;border:0;border-radius:var(--r-pill);padding:.28rem .75rem;background:rgba(0,0,0,.28);color:#fff;font-weight:700;font-size:var(--text-xs);cursor:pointer}
 .job-open:hover{background:rgba(0,0,0,.42)}
+.job-cancel{position:relative;flex:none;display:grid;place-items:center;width:24px;height:24px;border:0;border-radius:50%;background:rgba(0,0,0,.28);color:var(--text);cursor:pointer;padding:0}
+.job-cancel[hidden]{display:none}
+.job-cancel:hover{background:rgba(255,90,90,.85);color:#fff}
+.job-pill.cancelled{border-color:var(--line-2)}
+.job-pill.cancelled .job-fill{width:100% !important;background:rgba(255,255,255,.06)}
 .job-pill.done{border-color:rgba(var(--ok-rgb),.55)}
 .job-pill.done .job-fill{width:100% !important;background:rgba(var(--ok-rgb),.35)}
 .job-pill.fail{border-color:rgba(255,90,90,.55)}

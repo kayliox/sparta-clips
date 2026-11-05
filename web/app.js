@@ -103,6 +103,8 @@
       smartCut:         (n, s, e)    => call(b => b.SmartCut(String(n), Number(s) || 0, Number(e) || 0)),
       composeClip:      (n, json)    => call(b => b.ComposeClip(String(n), String(json || "{}"))),
       exportSegments:   (n, json)    => call(b => b.ExportSegments(String(n), String(json || "{}"))),
+      cancelJob:        ()           => call(b => b.CancelJob()),
+      revealFile:       (p)          => call(b => b.RevealFile(String(p || ""))),
       exportFile:       (n, p, f, j) => call(b => b.ExportFile(String(n), String(p || ""), String(f || "mp4"), String(j || "{}"))),
       pickSaveFile:     (nm, flt)    => new Promise(res => { window.onSaveFilePicked = (p) => { window.onSaveFilePicked = null; res(String(p || "")); }; call(b => b.PickSaveFile(String(nm || "clip"), String(flt || ""))); }),
       // player — the editor plays in-page via an HTML5 <video>; C# only probes keyframe times to snap the scrubber to.
@@ -1277,30 +1279,45 @@
   let _job = { state: "", p: 0, label: "", name: "", count: 1 }, _jobHideT = 0;
   let _delRefreshT = 0, _bulkDeleting = false;   // delete results arrive per clip ("deleted"); bulk deletes toast once
   function jobPillHTML() {
-    return `<div class="job-pill" role="status" aria-live="polite" hidden><div class="job-fill"></div><span class="job-txt"></span><span class="job-pct"></span><button class="job-open" hidden>Open</button></div>`;
+    return `<div class="job-pill" role="status" aria-live="polite" hidden><div class="job-fill"></div><span class="job-txt"></span><span class="job-pct"></span><button class="job-open" hidden>Open</button><button class="job-cancel" title="Cancel" aria-label="Cancel" hidden><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>`;
   }
   function paintJobPills() {
     document.querySelectorAll(".job-pill").forEach(box => {
-      const fill = box.querySelector(".job-fill"), txt = box.querySelector(".job-txt"), pct = box.querySelector(".job-pct"), open = box.querySelector(".job-open");
-      const j = _job;
+      const fill = box.querySelector(".job-fill"), txt = box.querySelector(".job-txt"), pct = box.querySelector(".job-pct"), open = box.querySelector(".job-open"), cancel = box.querySelector(".job-cancel");
+      const j = _job, running = j.state === "start" || j.state === "progress";
       box.hidden = !j.state;
-      box.classList.toggle("indet", j.state === "start"); box.classList.toggle("done", j.state === "done"); box.classList.toggle("fail", j.state === "fail");
+      box.classList.toggle("indet", j.state === "start" || (running && !!j.cancelling)); box.classList.toggle("done", j.state === "done"); box.classList.toggle("fail", j.state === "fail");
+      box.classList.toggle("cancelled", j.state === "cancelled");
       if (fill) fill.style.width = j.state === "progress" ? (j.p * 100).toFixed(1) + "%" : "0%";
-      if (txt) txt.textContent = j.state === "done" ? (j.count > 1 ? j.count + " clips ready" : "Clip ready")
-        : j.state === "fail" ? "Couldn't create the clip" : (j.label || "Creating clip") + "…";
-      if (pct) pct.textContent = j.state === "progress" ? Math.floor(j.p * 100) + "%" : "";
-      if (open) { open.hidden = !(j.state === "done" && j.name); if (!open._wired) { open._wired = true; open.addEventListener("click", openJobResult); } }
+      const fname = j.path ? String(j.path).split(/[\\/]/).pop() : "";
+      if (txt) txt.textContent = running && j.cancelling ? "Cancelling…"
+        : j.state === "done" ? (fname ? "Exported " + fname : j.count > 1 ? j.count + " clips ready" : "Clip ready")
+        : j.state === "fail" ? (j.export ? "Export failed" : "Couldn't create the clip")
+        : j.state === "cancelled" ? "Cancelled"
+        : (j.label || "Creating clip") + "…";
+      if (txt) txt.title = j.path || "";
+      if (pct) pct.textContent = j.state === "progress" && !j.cancelling ? Math.floor(j.p * 100) + "%" : "";
+      if (open) {
+        open.hidden = !(j.state === "done" && (j.name || j.path)); open.textContent = j.path ? "Show" : "Open";
+        if (!open._wired) { open._wired = true; open.addEventListener("click", openJobResult); }
+      }
+      if (cancel) {
+        cancel.hidden = !running || !!j.cancelling;
+        if (!cancel._wired) { cancel._wired = true; cancel.addEventListener("click", () => { if (_job.state !== "start" && _job.state !== "progress") return; _job.cancelling = true; paintJobPills(); clipsNative.cancelJob(); }); }
+      }
     });
   }
   function openJobResult() {
-    const n = _job.name; _job = { state: "", p: 0, label: "", name: "", count: 1 }; paintJobPills();
+    const n = _job.name, path = _job.path; _job = { state: "", p: 0, label: "", name: "", count: 1 }; paintJobPills();
+    if (path) { clipsNative.revealFile(path); return; }
     if (n && _clips.some(c => c.name === n)) openClipPage(n); else showToast("Clip ready", "It's in the gallery under Edited.");
   }
   function clipJobUi(d) {
     clearTimeout(_jobHideT);
-    if (d.state === "start") _job = { state: "start", p: 0, label: d.label || "Creating clip", name: "", count: 1 };
+    if (d.state === "start") _job = { state: "start", p: 0, label: d.label || "Creating clip", name: "", count: 1, export: /^Exporting/.test(d.label || "") };
     else if (d.state === "progress") { _job.state = "progress"; _job.p = Math.max(_job.p || 0, Math.min(0.99, +d.p || 0)); }
-    else if (d.state === "done") { _job.state = "done"; _job.name = d.name || ""; _job.count = d.count || 1; _jobHideT = setTimeout(() => { _job.state = ""; paintJobPills(); }, 9000); }
+    else if (d.state === "cancelled") { _job.state = "cancelled"; _job.cancelling = false; _jobHideT = setTimeout(() => { _job.state = ""; paintJobPills(); }, 3500); showToast("Cancelled", _job.export ? "The export was stopped — no file was written." : "Clip creation was stopped."); }
+    else if (d.state === "done") { _job.state = "done"; _job.name = d.name || ""; _job.path = d.path || ""; _job.count = d.count || 1; _jobHideT = setTimeout(() => { _job.state = ""; paintJobPills(); }, 9000); }
     else if (d.state === "fail") { _job.state = "fail"; _jobHideT = setTimeout(() => { _job.state = ""; paintJobPills(); }, 6000); }
     paintJobPills();
   }
@@ -2107,7 +2124,6 @@
     const filter = format === "gif" ? "Animated GIF (*.gif)|*.gif" : "MP4 video (*.mp4)|*.mp4";
     const path = await clipsNative.pickSaveFile(stem + ext, filter);
     if (!path) return;
-    showToast(format === "gif" ? "Exporting GIF…" : "Exporting MP4…", "Rendering your selection — this can take a moment.");
     clipsNative.exportFile(n, path, format, JSON.stringify(exportOpts(inS, outS)));
   }
   function openExportMenu() {
