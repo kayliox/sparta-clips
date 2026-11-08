@@ -93,7 +93,10 @@ namespace SpartaClips
                 // The dot breathes (~1.4 s) while recording; steady when paused.
                 double pulse = paused ? 1 : 0.62 + 0.38 * Math.Cos((now - _shownAt).TotalSeconds * Math.PI * 2 / 1.4);
 
-                // Pin to the top-right of the monitor being recorded: the captured window's screen, else the primary.
+                // Pin to the chosen corner (Settings → "Recording indicator position", default top-right) of the monitor
+                // being recorded: the captured window's screen, else the primary. Re-read ~once a second so a change
+                // applies live (the config read is mtime-cached).
+                if (_frame % 20 == 0 || _pos == null) { try { _pos = AppConfig.OverlayPos(); } catch { _pos = "tr"; } }
                 IntPtr cap = ClipRecorder.CaptureWindow;
                 Screen scr; try { scr = cap != IntPtr.Zero ? Screen.FromHandle(cap) : (Screen.PrimaryScreen ?? Screen.AllScreens[0]); } catch { scr = Screen.AllScreens[0]; }
                 float sc = MonitorScale(scr);
@@ -105,14 +108,17 @@ namespace SpartaClips
                 try { if (_frame % 20 == 0) bmp.Save(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "spartaclips_overlay_" + (paused ? "paused" : "rec") + ".png")); } catch { }
 #endif
                 var b = scr.Bounds;
-                int x = b.Right - bmp.Width - (int)Math.Round((MARGIN - SHADOW) * sc);
-                int y = b.Top + (int)Math.Round((MARGIN - SHADOW) * sc);
+                int m = (int)Math.Round((MARGIN - SHADOW) * sc);
+                string pos = _pos ?? "tr";
+                int x = pos[1] == 'l' ? b.Left + m : pos[1] == 'c' ? b.Left + (b.Width - bmp.Width) / 2 : b.Right - bmp.Width - m;
+                int y = pos[0] == 'b' ? b.Bottom - bmp.Height - m : b.Top + m;
                 // Re-assert topmost about once a second (a game can re-assert its own topmost focus).
                 Present(_form.Handle, bmp, x, y, (byte)Math.Round(a * 255), (_frame++ % 20) == 0);
             }
             catch { }
         }
 
+        private static string? _pos;   // cached overlay position ("tr" etc.)
         private static string AppLabel(IntPtr cap)
         {
             if (cap == IntPtr.Zero) return "Full screen";

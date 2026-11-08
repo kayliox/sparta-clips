@@ -714,6 +714,7 @@ body.app-idle .job-pill.indet .job-fill{animation-play-state:paused}
 .ar-pick-item:hover:not(:disabled){border-color:rgba(var(--accent-rgb),.6);background:rgba(var(--accent-rgb),.10)}
 .ar-pick-item:disabled{opacity:.45;cursor:default}
 .ar-pick-item img,.ar-pick-noimg{flex:none;width:96px;height:54px;object-fit:cover;border-radius:6px;background:#000}
+.ar-pick-noimg{display:grid;place-items:center;text-align:center;font-size:10px;line-height:1.2;color:var(--text-2);padding:0 4px}
 .ar-pick-txt{display:flex;flex-direction:column;min-width:0}
 .ar-pick-txt strong{font-size:var(--text-sm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ar-pick-txt span{font-family:var(--mono);font-size:var(--text-xs);color:var(--text-2)}

@@ -133,6 +133,12 @@ namespace SpartaClips
         public static bool ReleaseUiOnClose() => (bool?)Settings()["releaseUiOnClose"] ?? true;
         // Show the in-game "● REC" overlay while a full recording runs (default on).
         public static bool OverlayEnabled() => (bool?)Settings()["overlayEnabled"] ?? true;
+        /// <summary>Where the in-game REC pill sits: "tr" (default) | "tl" | "tc" | "br" | "bl" | "bc".</summary>
+        public static string OverlayPos()
+        {
+            var v = (string?)Settings()["overlayPos"] ?? "tr";
+            return v is "tl" or "tc" or "br" or "bl" or "bc" ? v : "tr";
+        }
         public static bool AutoUpdate() => (bool?)Settings()["autoUpdate"] ?? true;   // check GitHub for new builds + ask before installing
 
         // ── Per-game capture profiles: override fps/bitrate/resolution for games whose title/exe CONTAINS "match"

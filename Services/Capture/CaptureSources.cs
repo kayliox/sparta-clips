@@ -12,7 +12,10 @@ namespace SpartaClips
     internal static class CaptureSources
     {
         // [{ hwnd:"0x…", title, proc, w, h, thumb:"data:image/jpeg;base64,…" }] in z-order (topmost first).
-        public static string ListWindowsJson()
+        /// <param name="includeMinimized">Auto-record's "Add running game" picker: also list minimized windows. A game in
+        /// exclusive fullscreen minimizes itself the moment you click over to Sparta Clips, so it was missing from the
+        /// list (only borderless games showed up). Minimized entries carry minimized:true and no thumbnail.</param>
+        public static string ListWindowsJson(bool includeMinimized = false)
         {
             var list = new List<object>();
             try
@@ -22,7 +25,8 @@ namespace SpartaClips
                 {
                     try
                     {
-                        if (!IsWindowVisible(h) || IsIconic(h)) return true;                       // minimized can't be WGC-captured
+                        bool iconic = IsIconic(h);
+                        if (!IsWindowVisible(h) || (iconic && !includeMinimized)) return true;     // minimized can't be WGC-captured
                         if (((long)GetWindowLongPtr(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) != 0) return true;
                         int cloaked = 0; DwmGetWindowAttribute(h, DWMWA_CLOAKED, out cloaked, 4);  // suspended UWP / other virtual desktops
                         if (cloaked != 0) return true;
@@ -34,15 +38,19 @@ namespace SpartaClips
                         if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd") return true; // desktop/taskbar shells
                         GetWindowThreadProcessId(h, out uint pid);
                         if (pid == ownPid) return true;                                            // never offer our own UI
-                        GetWindowRect(h, out RECT r);
-                        int w = r.Right - r.Left, hh = r.Bottom - r.Top;
-                        if (w < 120 || hh < 90) return true;                                       // splash slivers / widgets
+                        int w = 0, hh = 0;
+                        if (!iconic)
+                        {
+                            GetWindowRect(h, out RECT r);
+                            w = r.Right - r.Left; hh = r.Bottom - r.Top;
+                            if (w < 120 || hh < 90) return true;                                   // splash slivers / widgets
+                        }
                         string proc = "";
                         try { using var p = System.Diagnostics.Process.GetProcessById((int)pid); proc = p.ProcessName; } catch { }
                         // Never PrintWindow a hung window — it's a synchronous cross-process call with no timeout, and
                         // one not-responding app would freeze this whole enumeration (the picker then never populates).
-                        string thumb = IsHungAppWindow(h) ? "" : Thumb(h, w, hh);
-                        list.Add(new { hwnd = ((long)h).ToString(), title, proc, w, h = hh, thumb });
+                        string thumb = iconic || IsHungAppWindow(h) ? "" : Thumb(h, w, hh);
+                        list.Add(new { hwnd = ((long)h).ToString(), title, proc, w, h = hh, thumb, minimized = iconic });
                     }
                     catch { }
                     return list.Count < 40;   // sane ceiling — nobody scrolls 40+ windows in a picker

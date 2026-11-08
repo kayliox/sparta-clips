@@ -818,8 +818,8 @@
       const seen = new Set();
       const rows = (wins || []).filter(w => w.proc && !seen.has(w.proc.toLowerCase()) && seen.add(w.proc.toLowerCase()));
       host.innerHTML = rows.map((w, i) => `<button class="ar-pick-item" data-i="${i}"${have.has(w.proc.toLowerCase()) ? " disabled" : ""}>`
-        + (w.thumb ? `<img alt="" src="${esc(w.thumb)}">` : `<span class="ar-pick-noimg"></span>`)
-        + `<span class="ar-pick-txt"><strong>${esc(w.title)}</strong><span>${esc(w.proc)}.exe${have.has(w.proc.toLowerCase()) ? " · already added" : ""}</span></span></button>`).join("")
+        + (w.thumb ? `<img alt="" src="${esc(w.thumb)}">` : `<span class="ar-pick-noimg">${w.minimized ? "Fullscreen / minimized" : ""}</span>`)
+        + `<span class="ar-pick-txt"><strong>${esc(w.title)}</strong><span>${esc(w.proc)}.exe${w.minimized ? " · minimized" : ""}${have.has(w.proc.toLowerCase()) ? " · already added" : ""}</span></span></button>`).join("")
         || `<div class="gp-empty">No open windows found. Launch the game first, or use "Browse for .exe".</div>`;
       host.querySelectorAll(".ar-pick-item").forEach(b => b.addEventListener("click", () => { const w = rows[+b.dataset.i]; close(); addAutoRecGame(w.proc, w.title); }));
     };
@@ -1010,6 +1010,7 @@
     { const t = $("#toggleAutostartElev"); if (t) t.setAttribute("aria-checked", String(state.settings.autostartElevated === true)); }
     { const t = $("#toggleReleaseOnClose"); if (t) t.setAttribute("aria-checked", String(state.settings.releaseUiOnClose !== false)); }
     { const t = $("#toggleOverlay"); if (t) t.setAttribute("aria-checked", String(state.settings.overlayEnabled !== false)); }
+    { const e = $("#setOverlayPos"); if (e) e.value = state.settings.overlayPos || "tr"; }
     { const t = $("#toggleAutoUpdate"); if (t) t.setAttribute("aria-checked", String(state.settings.autoUpdate !== false)); }
   }
   // A small icon per settings section (matched by keyword in the group heading), for scannable nav chips.
@@ -1108,6 +1109,10 @@
         const e = $("#toggleAutostartElev"); if (e) e.setAttribute("aria-checked", String(task));
     } catch {} };
     { const t = $("#toggleReleaseOnClose"); if (t) t.addEventListener("click", () => { const on = t.getAttribute("aria-checked") !== "true"; t.setAttribute("aria-checked", String(on)); state.settings.releaseUiOnClose = on; save(); showToast("Keep running when closed", on ? "The X keeps Sparta Clips in the tray." : "The X quits Sparta Clips fully."); }); }
+    { const e = $("#setOverlayPos"); if (e) e.addEventListener("change", () => {
+        state.settings.overlayPos = e.value; save();
+        showToast("Recording indicator", "Moves to the " + e.options[e.selectedIndex].text.toLowerCase() + " — takes effect right away, even mid-recording.");
+    }); }
     { const t = $("#toggleOverlay"); if (t) t.addEventListener("click", () => { const on = t.getAttribute("aria-checked") !== "true"; t.setAttribute("aria-checked", String(on)); state.settings.overlayEnabled = on; save(); showToast("Recording indicator", on ? "A ● REC timer shows over the game while recording." : "Off — no in-game recording indicator."); }); }
     { const b = $("#addGameProfile"); if (b) b.addEventListener("click", () => { gameProfilesList().push({ match: "", fps: (state.settings.captureFps | 0) || 120, resH: (state.settings.captureResH | 0) || 1080, mbps: (state.settings.captureBitrate | 0) || 20 }); save(); renderGameProfiles(); const el = $("#gameProfiles"); const inp = el && el.querySelector(".gp-row:last-child .gp-match"); if (inp) inp.focus(); }); }
     renderGameProfiles();

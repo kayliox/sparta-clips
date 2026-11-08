@@ -116,7 +116,7 @@ namespace SpartaClips
         {
             Task.Run(() =>
             {
-                string json; try { json = CaptureSources.ListWindowsJson(); } catch { json = "[]"; }
+                string json; try { json = CaptureSources.ListWindowsJson(includeMinimized: true); } catch { json = "[]"; }
                 PostToWeb("window.onAutoRecordApps && window.onAutoRecordApps(" + json + ")");
             });
         }
