@@ -105,6 +105,8 @@
       exportSegments:   (n, json)    => call(b => b.ExportSegments(String(n), String(json || "{}"))),
       cancelJob:        ()           => call(b => b.CancelJob()),
       revealFile:       (p)          => call(b => b.RevealFile(String(p || ""))),
+      requestAutoRecordApps: ()      => call(b => b.RequestAutoRecordApps()),
+      pickExeFile:      ()           => new Promise(res => { window.onExePicked = (p) => { window.onExePicked = null; res(String(p || "")); }; call(b => b.PickExeFile()); }),
       exportFile:       (n, p, f, j) => call(b => b.ExportFile(String(n), String(p || ""), String(f || "mp4"), String(j || "{}"))),
       pickSaveFile:     (nm, flt)    => new Promise(res => { window.onSaveFilePicked = (p) => { window.onSaveFilePicked = null; res(String(p || "")); }; call(b => b.PickSaveFile(String(nm || "clip"), String(flt || ""))); }),
       // player — the editor plays in-page via an HTML5 <video>; C# only probes keyframe times to snap the scrubber to.
@@ -266,6 +268,7 @@
       dualScreen: null, theme: "spartan",
       armPolicy: "always", autostart: false, autostartElevated: false, releaseUiOnClose: true, overlayEnabled: true, autoUpdate: true,
       gameProfiles: [],
+      autoRecord: false, autoRecordGames: [],
     };
   }
   function seed() { return { settings: defaultSettings(), clipBookmarks: {}, clipSegments: {} }; }
@@ -315,7 +318,74 @@
     $$(".nav-tab").forEach(b => { const on = b.dataset.view === _view; b.classList.toggle("active", on); b.setAttribute("aria-selected", String(on)); });
     if (_view === "gallery") renderGallery($("#galleryHost"));
     else { syncCapturePane(); syncShellSettings(); buildSettingsNav(); }
+    navChanged();
   }
+  // ── Back / forward history (mouse side buttons, Alt+Left/Right, the keyboard Back/Forward keys) ──
+  // Each place you can be = { v: "gallery" | "settings" | "clip", page (settings page), clip, from (view under the
+  // editor) }. Navigation sites call navChanged(); it's coalesced to one entry per user action (a tab click with the
+  // editor open does closeClipPage + showView — that's ONE step, not two).
+  let _navBack = [], _navFwd = [], _navCur = null, _navQueued = false, _navApplying = false;
+  function navState() {
+    if (_clipName) return { v: "clip", clip: _clipName, from: _view, page: _setPage };
+    return { v: _view, page: _view === "settings" ? _setPage : 0 };
+  }
+  const navKey = s => s ? s.v + "|" + (s.v === "clip" ? s.clip : s.v === "settings" ? s.page : "") : "";
+  function navChanged() {
+    if (_navQueued) return; _navQueued = true;
+    Promise.resolve().then(() => {
+      _navQueued = false;
+      const s = navState();
+      if (navKey(s) === navKey(_navCur)) { _navCur = s; return; }
+      if (_navCur && !_navApplying) { _navBack.push(_navCur); if (_navBack.length > 50) _navBack.shift(); _navFwd = []; }
+      _navCur = s;
+    });
+  }
+  function navApply(s) {
+    _navApplying = true;
+    try {
+      if (s.v === "clip") {
+        if (!_clips.some(c => c.name === s.clip)) return false;   // deleted since — skip this entry
+        if (_view !== s.from) showView(s.from);
+        if (s.from === "settings") applyPage(s.page | 0);
+        if (_clipName !== s.clip) openClipPage(s.clip);
+      } else {
+        const pg = $("#clipPage"); if (pg && !pg.hidden) closeClipPage();
+        if (_view !== s.v) showView(s.v);
+        if (s.v === "settings") applyPage(s.page | 0);
+      }
+      return true;
+    } finally {
+      // the views above record via a microtask — let it run as part of THIS move, then resume normal recording
+      Promise.resolve().then(() => { _navCur = navState(); _navApplying = false; });
+    }
+  }
+  function navGo(dir) {   // -1 back, +1 forward
+    // An open dialog / popup takes the first Back (like Escape) instead of the page underneath changing.
+    if (dir < 0 && (document.querySelector(".confirm-ov") || (() => { const p = $("#srcPop"); return p && !p.hidden; })())) {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); return;
+    }
+    const from = dir < 0 ? _navBack : _navFwd, to = dir < 0 ? _navFwd : _navBack;
+    while (from.length) {
+      const target = from.pop(), cur = _navCur || navState();
+      if (navApply(target)) { to.push(cur); return; }
+    }
+  }
+  // Mouse buttons 3/4 = the side "back"/"forward" buttons. mousedown is swallowed too so WebView2 never tries a
+  // page-history navigation of its own.
+  window.addEventListener("mousedown", e => { if (e.button === 3 || e.button === 4) e.preventDefault(); }, true);
+  window.addEventListener("mouseup", e => {
+    if (e.button !== 3 && e.button !== 4) return;
+    e.preventDefault(); e.stopPropagation();
+    navGo(e.button === 3 ? -1 : 1);
+  }, true);
+  document.addEventListener("keydown", e => {
+    const back = e.key === "BrowserBack" || (e.altKey && e.key === "ArrowLeft");
+    const fwd = e.key === "BrowserForward" || (e.altKey && e.key === "ArrowRight");
+    if (!back && !fwd) return;
+    const ae = document.activeElement;
+    if (e.altKey && ae && /^(INPUT|TEXTAREA)$/.test(ae.tagName)) return;   // leave text editing alone
+    e.preventDefault(); navGo(back ? -1 : 1);
+  }, true);
   // The C# tray calls this to open the window to a view. ""/null → Gallery; "settings" → Settings.
   window.onRouteView = (view) => { try { closeClipPage(); showView(view === "settings" ? "settings" : "gallery"); } catch {} };   // the editor overlay sits ABOVE the views — without closing it, a tray "Settings" appeared to do nothing
   // Top-tab nav. Clicking a tab while the clip editor is open returns to the tabbed view first.
@@ -691,6 +761,70 @@
       });
     }
   }
+  // ── Auto-record games: a list of { exe, name, on }. C# (TrayCore auto-record watch) reads config.json every tick,
+  //    so save() is all a change needs. ──
+  function autoRecList() { return state.settings.autoRecordGames || (state.settings.autoRecordGames = []); }
+  function exeOf(s) { return String(s || "").split(/[\\/]/).pop().replace(/\.exe$/i, "").trim(); }
+  function addAutoRecGame(exe, name) {
+    exe = exeOf(exe); if (!exe) return;
+    if (autoRecList().some(g => exeOf(g.exe).toLowerCase() === exe.toLowerCase())) { showToast("Auto-record", (name || exe) + " is already in the list."); return; }
+    autoRecList().push({ exe, name: String(name || exe).trim().slice(0, 60), on: true });
+    if (!state.settings.autoRecord) { state.settings.autoRecord = true; const t = $("#toggleAutoRecord"); if (t) t.setAttribute("aria-checked", "true"); }
+    save(); renderAutoRec();
+    showToast("Auto-record", (name || exe) + " will be recorded when it launches.");
+  }
+  function renderAutoRec() {
+    const host = $("#autoRecList"); if (!host) return;
+    { const t = $("#toggleAutoRecord"); if (t) t.setAttribute("aria-checked", String(!!state.settings.autoRecord)); }
+    const list = autoRecList();
+    host.classList.toggle("ar-off", !state.settings.autoRecord);
+    host.innerHTML = list.map((g, i) =>
+      `<div class="gp-row ar-row" data-i="${i}">`
+      + `<button class="toggle ar-on" role="switch" aria-checked="${g.on !== false}" aria-label="Record ${esc(g.name || g.exe)}" title="${g.on !== false ? "On" : "Off"} for this game"></button>`
+      + `<input class="sgdb-field gp-match ar-name" data-k="name" placeholder="Game name" value="${esc(g.name || "")}" maxlength="60" aria-label="Game name (names the clip)" title="Names the clip">`
+      + `<span class="ar-exe" title="Program that's watched">${esc(exeOf(g.exe))}.exe</span>`
+      + `<button class="tiny-btn danger ar-del" title="Remove from auto-record" aria-label="Remove">Remove</button>`
+      + `</div>`).join("") || `<div class="gp-empty">No games yet. Launch a game, then use "Add running game", or browse for its .exe.</div>`;
+    if (!host._wired) {
+      host._wired = true;
+      host.addEventListener("input", e => {
+        const row = e.target.closest(".ar-row"); if (!row || !e.target.classList.contains("ar-name")) return;
+        const g = autoRecList()[+row.dataset.i]; if (g) { g.name = e.target.value; save(); }
+      });
+      host.addEventListener("click", e => {
+        const row = e.target.closest(".ar-row"); if (!row) return;
+        const i = +row.dataset.i, g = autoRecList()[i]; if (!g) return;
+        if (e.target.closest(".ar-del")) { autoRecList().splice(i, 1); save(); renderAutoRec(); return; }
+        const sw = e.target.closest(".ar-on");
+        if (sw) { g.on = g.on === false; save(); sw.setAttribute("aria-checked", String(g.on)); sw.title = (g.on ? "On" : "Off") + " for this game"; }
+      });
+    }
+  }
+  function openAutoRecPicker() {
+    const ov = document.createElement("div"); ov.className = "confirm-ov";
+    ov.innerHTML = `<div class="confirm-box ar-pick" role="dialog" aria-modal="true" aria-label="Add a running game"><div class="confirm-title">Add a running game</div>`
+      + `<div class="confirm-body">Pick the game's window. Its program is what gets watched, so it's recorded every time it launches.</div>`
+      + `<div class="ar-pick-list"><div class="gp-empty">Looking for open windows…</div></div>`
+      + `<div class="confirm-actions"><button class="gal-btn" data-act="cancel">Cancel</button></div></div>`;
+    document.body.appendChild(ov);
+    const close = () => { ov.remove(); document.removeEventListener("keydown", onKey, true); window.onAutoRecordApps = null; };
+    const onKey = e => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); } };
+    document.addEventListener("keydown", onKey, true);
+    ov.addEventListener("pointerdown", e => { if (e.target === ov) close(); });
+    ov.querySelector('[data-act="cancel"]').addEventListener("click", close);
+    window.onAutoRecordApps = (wins) => {
+      const host = ov.querySelector(".ar-pick-list"); if (!host) return;
+      const have = new Set(autoRecList().map(g => exeOf(g.exe).toLowerCase()));
+      const seen = new Set();
+      const rows = (wins || []).filter(w => w.proc && !seen.has(w.proc.toLowerCase()) && seen.add(w.proc.toLowerCase()));
+      host.innerHTML = rows.map((w, i) => `<button class="ar-pick-item" data-i="${i}"${have.has(w.proc.toLowerCase()) ? " disabled" : ""}>`
+        + (w.thumb ? `<img alt="" src="${esc(w.thumb)}">` : `<span class="ar-pick-noimg"></span>`)
+        + `<span class="ar-pick-txt"><strong>${esc(w.title)}</strong><span>${esc(w.proc)}.exe${have.has(w.proc.toLowerCase()) ? " · already added" : ""}</span></span></button>`).join("")
+        || `<div class="gp-empty">No open windows found. Launch the game first, or use "Browse for .exe".</div>`;
+      host.querySelectorAll(".ar-pick-item").forEach(b => b.addEventListener("click", () => { const w = rows[+b.dataset.i]; close(); addAutoRecGame(w.proc, w.title); }));
+    };
+    clipsNative.requestAutoRecordApps();
+  }
   function populateDevices(selId, listFn, savedKey) {
     const sel = $(selId); if (!sel) return;
     const r = listFn(); if (!r || !r.then) return;
@@ -882,6 +1016,7 @@
   function sectionIcon(title) {
     const t = (title || "").toLowerCase();
     const S = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
+    if (t.includes("auto-record")) return S('<rect x="2" y="7" width="20" height="11" rx="5"></rect><path d="M7 11v3M5.5 12.5h3"></path><circle cx="16" cy="11.5" r="1"></circle><circle cx="18" cy="14" r="1"></circle>');
     if (t.includes("record")) return S('<rect x="2.5" y="6" width="13" height="12" rx="2"></rect><path d="m15.5 10 5-3v10l-5-3"></path>');
     if (t.includes("dual")) return S('<rect x="2" y="4" width="9" height="12" rx="1.5"></rect><rect x="13" y="7" width="9" height="12" rx="1.5"></rect>');
     if (t.includes("audio")) return S('<path d="M4 9v6h4l5 4V5L8 9z"></path><path d="M17 8.5a5 5 0 0 1 0 7"></path>');
@@ -905,6 +1040,7 @@
     _setPage = Math.max(0, Math.min(panels.length - 1, i));
     panels.forEach((p, k) => { const on = k === _setPage; p.classList.toggle("active", on); if (on) p.scrollTop = 0; });
     const nav = $("#setSubnav"); if (nav) nav.querySelectorAll(".set-navchip").forEach((c, k) => c.classList.toggle("active", k === _setPage));
+    navChanged();
   }
   function setSettingsPage(i) { applyPage(i); }   // chip click / initial — jump straight to that page
   function onSettingsWheel(e) {
@@ -975,6 +1111,16 @@
     { const t = $("#toggleOverlay"); if (t) t.addEventListener("click", () => { const on = t.getAttribute("aria-checked") !== "true"; t.setAttribute("aria-checked", String(on)); state.settings.overlayEnabled = on; save(); showToast("Recording indicator", on ? "A ● REC timer shows over the game while recording." : "Off — no in-game recording indicator."); }); }
     { const b = $("#addGameProfile"); if (b) b.addEventListener("click", () => { gameProfilesList().push({ match: "", fps: (state.settings.captureFps | 0) || 120, resH: (state.settings.captureResH | 0) || 1080, mbps: (state.settings.captureBitrate | 0) || 20 }); save(); renderGameProfiles(); const el = $("#gameProfiles"); const inp = el && el.querySelector(".gp-row:last-child .gp-match"); if (inp) inp.focus(); }); }
     renderGameProfiles();
+    renderAutoRec();
+    { const t = $("#toggleAutoRecord"); if (t) t.addEventListener("click", () => {
+        state.settings.autoRecord = !state.settings.autoRecord; save(); renderAutoRec();
+        showToast("Auto-record", state.settings.autoRecord ? (autoRecList().some(g => g.on !== false) ? "On — listed games are recorded when they launch." : "On — add a game to the list below.") : "Off.");
+    }); }
+    { const b = $("#autoRecAdd"); if (b) b.addEventListener("click", openAutoRecPicker); }
+    { const b = $("#autoRecBrowse"); if (b) b.addEventListener("click", async () => {
+        const p = await clipsNative.pickExeFile(); if (!p) return;
+        const exe = exeOf(p); addAutoRecGame(exe, exe);
+    }); }
     { const b = $("#openLogsBtn"); if (b) b.addEventListener("click", () => clipsNative.openLogsFolder()); }
     // ── Updates: C# (AppUpdater) checks GitHub releases; this only shows the version, the toggle and "Check now". ──
     let _updInfo = null;
@@ -2160,6 +2306,7 @@
   function openClipPage(name) {
     const c = _clips.find(x => x.name === name); if (!c) return;
     const p = parseClip(name);
+    navChanged();
     _clipName = name; _clipDur = c.duration || 0; _clipIn = 0; _clipOut = _clipDur; _tlV0 = _tlV1 = 0; _t = 0; _playing = false; _atEnd = false; _clipKfs = []; _clipAR = (infoMem[name] && infoMem[name].width > 0) ? infoMem[name].width / infoMem[name].height : 0;
     _hasMic = !!c.hasMic; _micBase = 0; _micTlStart = 0; _micTlEnd = _clipDur; _vidVol = 100; _micVol = 100; _micManual = false; _micMuted = state.settings.clipMicMuted === true; _micReadable = true;
     _hasChat = !!c.hasChat; _chatBase = 0; _chatTlStart = 0; _chatTlEnd = _clipDur; _chatVol = 100; _chatManual = false; _chatMuted = state.settings.clipChatMuted === true; _chatReadable = true;
@@ -2214,6 +2361,7 @@
     // sat referenced the whole time the user browsed the gallery. _clipName clears so late callbacks can't target us.
     _micBuf = null; _chatBuf = null; _micWave = null; _chatWave = null;
     _clipName = "";
+    navChanged();
     _playing = false;
     _seeking = false; _seekPending = -1; _atEnd = false;   // a seek in flight when src is removed never fires `seeked` — stuck true, it froze live scrubbing in the NEXT clip (and a stale pending target replayed into it)
     const pg = $("#clipPage"); if (pg) pg.hidden = true;

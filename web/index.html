@@ -296,6 +296,20 @@
               </div>
             </div>
 
+            <!-- Auto-record chosen games: record a game's window as soon as it launches, stop + save when it closes. -->
+            <div class="panel section collapsible">
+              <div class="section-head"><div><h3>Auto-record games</h3><p>Start a full recording of a game's window as soon as it launches, and save it when the game closes. Only the games in this list are recorded.</p></div></div>
+              <div class="setting-row">
+                <div class="label"><strong>Auto-record listed games</strong><span>Recording starts a few seconds after the game's window appears. Pressing Stop ends it for that session.</span></div>
+                <button class="toggle" id="toggleAutoRecord" role="switch" aria-checked="false" aria-label="Auto-record listed games"></button>
+              </div>
+              <div id="autoRecList" class="game-profiles"></div>
+              <div class="setting-row ar-add">
+                <button class="action-btn" id="autoRecAdd">＋ Add running game</button>
+                <button class="action-btn" id="autoRecBrowse">Browse for .exe…</button>
+              </div>
+            </div>
+
             <!-- App shell settings (standalone-only): arm policy, autostart, close behaviour, quit + logs. -->
             <div class="panel section collapsible">
               <div class="section-head"><div><h3>General</h3><p>App startup and window behaviour.</p></div></div>

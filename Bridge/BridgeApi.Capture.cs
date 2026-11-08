@@ -111,6 +111,16 @@ namespace SpartaClips
             });
         }
 
+        // Auto-record "Add running game" picker: the same open-window list (with thumbnails) → window.onAutoRecordApps.
+        public void RequestAutoRecordApps()
+        {
+            Task.Run(() =>
+            {
+                string json; try { json = CaptureSources.ListWindowsJson(); } catch { json = "[]"; }
+                PostToWeb("window.onAutoRecordApps && window.onAutoRecordApps(" + json + ")");
+            });
+        }
+
         private static string ListEndpoints(NAudio.CoreAudioApi.DataFlow flow)
         {
             try

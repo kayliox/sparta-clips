@@ -337,6 +337,18 @@ namespace SpartaClips
             _srcHwnd = w;
             return "";
         }
+        /// <summary>A program's main capturable window (largest), or Zero — auto-record uses it to spot a game launch.</summary>
+        public static IntPtr FindAppWindowFor(string proc) => FindAppWindow(proc);
+        // ── One-shot window target (auto-record): THIS recording captures exactly that window, ahead of the capture
+        //    source setting; cleared when the recording ends so replay / the next recording use the normal source. ──
+        private static IntPtr _oneShotHwnd = IntPtr.Zero;
+        public static bool StartWindow(IntPtr hwnd, string name)
+        {
+            _oneShotHwnd = hwnd;
+            bool ok = false;
+            try { ok = Start(name); } finally { if (!ok) _oneShotHwnd = IntPtr.Zero; }
+            return ok;
+        }
         /// <summary>The pinned program name, or "" when the source isn't a window pin.</summary>
         public static string PinnedApp => _srcMode == "window" ? _pinProc : "";
         /// <summary>Raise a recorder event from outside the engine (TrayCore's wait-for-app state).</summary>
@@ -439,7 +451,7 @@ namespace SpartaClips
             // No caller passes a real title (the hotkey path always sends "") → resolve the foreground game NOW, so the
             // file gets a real name AND per-game profiles actually match. before: ApplyGameProfile("") never matched.
             // A pinned source window wins outright — the clip is named after the app actually being captured.
-            string srcTitle = SourceWindowTitle();
+            string srcTitle = _oneShotHwnd != IntPtr.Zero ? "" : SourceWindowTitle();   // auto-record names the clip after the game
             if (srcTitle.Length > 0) gameName = srcTitle;
             else if (string.IsNullOrWhiteSpace(gameName)) gameName = ForegroundGameName();
             ApplyGameProfile(gameName);   // a matching per-game profile overrides fps/bitrate/resolution for this recording
@@ -517,7 +529,7 @@ namespace SpartaClips
             // its fresh sidecars deleted. after: only the finished instance is disposed; a new Start() is untouched.
             var rec = _rec; _rec = null;
             double[] marks = SnapshotMarks();
-            _recording = false; _paused = false;
+            _recording = false; _paused = false; _oneShotHwnd = IntPtr.Zero;
             RestoreGameProfile();   // hand the engine back its global fps/bitrate/res for the next replay-arm / recording
             StopDiskMonitor();
             _micSide.StopSidecar(ok); _chatSide.StopSidecar(ok);   // finalize (keep) the sidecars on success; drop partials on failure
@@ -899,7 +911,8 @@ namespace SpartaClips
             // Session source override first: a valid pinned window beats everything (incl. dual — an explicit pick);
             // "display" forces the monitor path below; "auto" falls through to the settings behavior.
             IntPtr pin = IntPtr.Zero;
-            if (_srcMode == "window")
+            if (_oneShotHwnd != IntPtr.Zero) { try { if (_oneShotHwnd != IntPtr.Zero && IsWindow(_oneShotHwnd)) pin = _oneShotHwnd; } catch { } }
+            if (pin == IntPtr.Zero && _srcMode == "window")
             {
                 try { if (_srcHwnd != IntPtr.Zero && IsWindow(_srcHwnd)) pin = _srcHwnd; } catch { }
                 if (pin == IntPtr.Zero && _pinProc.Length > 0) { _srcHwnd = FindAppWindow(_pinProc); pin = _srcHwnd; }   // pinned program reopened → new window

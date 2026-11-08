@@ -83,6 +83,7 @@ namespace SpartaClips
             InstallHotkeys();
 
             _armPolicy = AppConfig.ArmPolicy();
+            StartAutoRecordWatch();
             _replayEnabled = AppConfig.ReplayEnabled();
             if (AppConfig.AutoHighlight()) HighlightCoordinator.Enabled = true;
             ApplyArmPolicy();
@@ -432,6 +433,84 @@ namespace SpartaClips
                 finally { System.Threading.Volatile.Write(ref _startingRecord, 0); }
             });
         }
+        // ── Auto-record chosen games (settings.autoRecord + autoRecordGames): when a listed game's window has been up
+        //    for a few seconds, record THAT window; when the game's process exits, stop + save. Pressing Stop on an
+        //    auto recording is respected — that game isn't re-recorded until it's closed and launched again. A manual
+        //    recording already running is never interrupted. UI-thread timer. ──
+        private System.Windows.Forms.Timer? _autoTimer;
+        private volatile string _autoRec = "";       // exe being auto-recorded
+        private string _autoSuppressed = "";         // user stopped it / it failed — skip until that game closes
+        private string _autoCand = ""; private IntPtr _autoCandHwnd; private int _autoSeen, _autoGone;
+        private void StartAutoRecordWatch()
+        {
+            _autoTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+            _autoTimer.Tick += (s, e) => AutoTick();
+            _autoTimer.Start();
+        }
+        private static bool ProcRunning(string exe)
+        {
+            try { var ps = System.Diagnostics.Process.GetProcessesByName(exe); bool any = ps.Length > 0; foreach (var p in ps) p.Dispose(); return any; }
+            catch { return false; }
+        }
+        private void AutoTick()
+        {
+            try
+            {
+                if (_autoRec.Length > 0)
+                {
+                    string g = _autoRec;
+                    if (!ClipRecorder.IsRecording)
+                    {   // ended without the game closing (Stop pressed / error) → don't start it again this session
+                        if (System.Threading.Volatile.Read(ref _startingRecord) == 1) return;
+                        _autoRec = ""; if (ProcRunning(g)) { _autoSuppressed = g; DiagLog.Line("CLIP", "auto-record: " + g + " stopped by user - not restarting until it closes"); }
+                        return;
+                    }
+                    if (ProcRunning(g)) { _autoGone = 0; return; }   // minimized / alt-tabbed still counts as running
+                    if (++_autoGone < 2) return;
+                    _autoRec = ""; _autoGone = 0;
+                    DiagLog.Line("CLIP", "auto-record: " + g + " closed -> stopping");
+                    Task.Run(() => { try { ClipRecorder.Stop(); } catch { } });
+                    return;
+                }
+                if (_autoSuppressed.Length > 0 && !ProcRunning(_autoSuppressed)) _autoSuppressed = "";
+                var games = AppConfig.AutoRecordGames();
+                if (games.Count == 0 || ClipRecorder.IsRecording || _waitApp.Length > 0 || System.Threading.Volatile.Read(ref _startingRecord) == 1) { _autoCand = ""; return; }
+                foreach (var (exe, name) in games)
+                {
+                    if (string.Equals(exe, _autoSuppressed, StringComparison.OrdinalIgnoreCase)) continue;
+                    IntPtr h = ClipRecorder.FindAppWindowFor(exe);
+                    if (h == IntPtr.Zero) continue;
+                    // The same window for ~3 s first: launchers flash a splash/loading window before the real one.
+                    if (string.Equals(_autoCand, exe, StringComparison.OrdinalIgnoreCase) && _autoCandHwnd == h) { if (++_autoSeen >= 3) BeginAutoRecord(exe, name, h); }
+                    else { _autoCand = exe; _autoCandHwnd = h; _autoSeen = 1; }
+                    return;
+                }
+                _autoCand = "";
+            }
+            catch (Exception ex) { DiagLog.Line("CLIP", "auto-record tick err: " + ex.Message); }
+        }
+        private void BeginAutoRecord(string exe, string name, IntPtr hwnd)
+        {
+            _autoCand = "";
+            if (System.Threading.Interlocked.Exchange(ref _startingRecord, 1) == 1) return;
+            _autoRec = exe; _autoGone = 0;
+            DiagLog.Line("CLIP", "auto-record: " + exe + " is open -> recording");
+            Toast(ToastKind.Success, "Recording " + name, "Started automatically · stops when the game closes");
+            Task.Run(async () =>
+            {
+                try
+                {
+                    if (ClipRecorder.IsReplayArmed) { _suspendedForRecord = true; await ClipRecorder.DisarmAsync(); }
+                    if (!ClipRecorder.StartWindow(hwnd, name))
+                    {
+                        _autoRec = ""; _ui.BeginInvoke(new Action(() => _autoSuppressed = exe));   // don't retry-loop a failing start
+                        if (_suspendedForRecord) { _suspendedForRecord = false; _ui.BeginInvoke(new Action(ApplyArmPolicy)); }
+                    }
+                }
+                catch { }
+                finally { System.Threading.Volatile.Write(ref _startingRecord, 0); }
+            });
+        }
         public void StopManualRecord()
         {
             if (_waitApp.Length > 0 && !ClipRecorder.IsRecording) { _ui.BeginInvoke(new Action(() => EndWait("Cancelled"))); return; }
@@ -475,7 +554,7 @@ namespace SpartaClips
             // NEVER arm over a live manual recording — ArmAsync Stop()s any active recording first, so the 3s game
             // watcher (armPolicy "game") would cut the user's session to a ~3s stub. The suspended flag covers the
             // window between FireRecordToggle's disarm and Start() flipping IsRecording.
-            if (ClipRecorder.IsRecording || _suspendedForRecord) return;
+            if (ClipRecorder.IsRecording || _suspendedForRecord || System.Threading.Volatile.Read(ref _startingRecord) == 1) return;   // a recording is starting (manual or auto)
             if (ClipRecorder.IsReplayArmed) return;
             Task.Run(async () =>
             {

@@ -703,6 +703,20 @@ body.app-idle .job-pill.indet .job-fill{animation-play-state:paused}
 .gp-field .gp-num{width:70px}
 .gp-field .gp-res{width:88px}
 .gp-del{align-self:flex-end;margin-bottom:1px}
+.ar-row{align-items:center}
+.ar-row .ar-name{flex:1 1 180px}
+.ar-exe{font-family:var(--mono);font-size:var(--text-xs);color:var(--text-2);padding:0 .3rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+#autoRecList.ar-off .ar-row{opacity:.5}
+.ar-add{gap:.5rem;justify-content:flex-start}
+.ar-pick{width:min(560px,92vw)}
+.ar-pick-list{display:flex;flex-direction:column;gap:.4rem;max-height:min(52vh,420px);overflow:auto;margin:.2rem 0 .8rem;padding-right:.2rem}
+.ar-pick-item{display:flex;align-items:center;gap:.75rem;padding:.45rem .55rem;border:1px solid var(--line-2);border-radius:10px;background:var(--surface-2);color:var(--text);cursor:pointer;text-align:left}
+.ar-pick-item:hover:not(:disabled){border-color:rgba(var(--accent-rgb),.6);background:rgba(var(--accent-rgb),.10)}
+.ar-pick-item:disabled{opacity:.45;cursor:default}
+.ar-pick-item img,.ar-pick-noimg{flex:none;width:96px;height:54px;object-fit:cover;border-radius:6px;background:#000}
+.ar-pick-txt{display:flex;flex-direction:column;min-width:0}
+.ar-pick-txt strong{font-size:var(--text-sm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ar-pick-txt span{font-family:var(--mono);font-size:var(--text-xs);color:var(--text-2)}
 .gp-empty{font-size:var(--text-xs);color:var(--text-2);padding:.3rem .1rem}
 /* "Preparing preview" overlay while ffmpeg makes the H.264 proxy for a non-native HEVC clip. */
 .clip-prep{position:absolute;inset:0;z-index:5;display:flex;align-items:center;justify-content:center;gap:.6rem;background:rgba(0,0,0,.72);color:var(--text);font-size:var(--text-sm);font-weight:600;backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px)}

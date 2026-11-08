@@ -65,6 +65,27 @@ namespace SpartaClips
             catch { Answer(""); }
         }
 
+        // Auto-record "Browse for .exe" → window.onExePicked(path|""). Same deferred-modal pattern as PickSaveFile.
+        public void PickExeFile()
+        {
+            void Answer(string path) { try { PostToWeb("window.onExePicked && window.onExePicked(" + Newtonsoft.Json.JsonConvert.SerializeObject(path ?? "") + ")"); } catch { } }
+            try
+            {
+                _form.BeginInvoke(new Action(() =>
+                {
+                    string result = "";
+                    try
+                    {
+                        using var dlg = new OpenFileDialog { Title = "Choose a game to auto-record", Filter = "Programs (*.exe)|*.exe", CheckFileExists = true };
+                        if (dlg.ShowDialog(_form) == DialogResult.OK) result = dlg.FileName ?? "";
+                    }
+                    catch { }
+                    Answer(result);
+                }));
+            }
+            catch { Answer(""); }
+        }
+
         // Auto-start on boot (HKCU Run key, "--tray"). The web toggle mirrors this into state too.
         public void SetAutostart(string on) { AppConfig.SetAutostart(on == "true" || on == "1"); }
         public bool IsAutostart() => AppConfig.IsAutostart();

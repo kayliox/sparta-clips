@@ -155,6 +155,28 @@ namespace SpartaClips
             catch { }
             return null;
         }
+        /// <summary>Auto-record: the enabled games to record when they launch — (exe without ".exe", display name).
+        /// Empty when the feature is off. settings.autoRecord + settings.autoRecordGames [{ exe, name, on }].</summary>
+        public static System.Collections.Generic.List<(string exe, string name)> AutoRecordGames()
+        {
+            var list = new System.Collections.Generic.List<(string, string)>();
+            try
+            {
+                var s = Settings();
+                if (!((bool?)s["autoRecord"] ?? false) || s["autoRecordGames"] is not JArray arr) return list;
+                foreach (var it in arr)
+                {
+                    if (((bool?)it["on"] ?? true) == false) continue;
+                    string exe = ((string?)it["exe"] ?? "").Trim();
+                    if (exe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) exe = exe.Substring(0, exe.Length - 4);
+                    if (exe.Length == 0) continue;
+                    string name = ((string?)it["name"] ?? "").Trim();
+                    list.Add((exe, name.Length > 0 ? name : exe));
+                }
+            }
+            catch { }
+            return list;
+        }
         public static bool StartHidden() => (bool?)Settings()["autostart"] ?? false;
 
         // ── Autostart (HKCU Run key, "--tray") ──
