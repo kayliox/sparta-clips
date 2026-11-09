@@ -361,6 +361,7 @@
   }
   function navGo(dir) {   // -1 back, +1 forward
     // An open dialog / popup takes the first Back (like Escape) instead of the page underneath changing.
+    if (dir < 0 && _ddOpen) { ddClose(); return; }
     if (dir < 0 && (document.querySelector(".confirm-ov") || (() => { const p = $("#srcPop"); return p && !p.hidden; })())) {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); return;
     }
@@ -2862,11 +2863,121 @@
     // Nested UI owns Escape: a modal overlay (Export dialog / onboarding / confirm) or a focused text edit (bookmark
     // label, rename box) — this capture handler registered FIRST, so without the bail it closed the whole editor
     // underneath them.
-    if (document.querySelector(".confirm-ov")) return;
+    if (document.querySelector(".confirm-ov, .dd-menu")) return;
     const ae = document.activeElement;
     if (ae && /^(INPUT|TEXTAREA)$/.test(ae.tagName) && (ae.type || "").toLowerCase() !== "range") return;
     const pg = $("#clipPage"); if (pg && !pg.hidden) { e.preventDefault(); e.stopPropagation(); closeClipPage(); }
   }, true);
+
+  // ══ Styled dropdowns ════════════════════════════════════════════════════════════════════════════════════════
+  // Every <select> gets an app-styled button + menu in front of it (the native list is OS-drawn: a plain grey box
+  // with off-centre text). The <select> stays in the DOM, hidden, as the single source of truth: picking an option
+  // sets select.value and fires "change", so every existing handler and save path works unchanged. Programmatic
+  // select.value / option changes repaint the button (value setter hook + MutationObserver). New selects (the
+  // gallery toolbar is re-rendered, profile rows are added) are enhanced automatically.
+  const DD_CHEV = '<svg class="dd-chev" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+  const DD_CHECK = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+  let _ddOpen = null;   // { sel, btn, menu, close }
+  function ddRefresh(sel) {
+    const btn = sel._ddBtn; if (!btn) return;
+    const o = sel.options[sel.selectedIndex];
+    btn.querySelector(".dd-label").textContent = o ? o.text : "";
+    btn.disabled = sel.disabled; btn.hidden = sel.hidden;
+    btn.title = sel.title || (o ? o.text : "");
+  }
+  function enhanceSelect(sel) {
+    if (sel._ddBtn || sel.multiple || sel.closest(".dd-skip")) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "dd-btn " + sel.className;
+    btn.setAttribute("aria-haspopup", "listbox"); btn.setAttribute("aria-expanded", "false");
+    if (sel.getAttribute("aria-label")) btn.setAttribute("aria-label", sel.getAttribute("aria-label"));
+    btn.innerHTML = '<span class="dd-label"></span>' + DD_CHEV;
+    sel.before(btn);   // before: a wrapping <label> activates its FIRST labelable child, so clicks on its icon open us
+    sel.classList.add("dd-native"); sel.tabIndex = -1; sel._ddBtn = btn;
+    const proto = HTMLSelectElement.prototype;
+    for (const k of ["value", "selectedIndex"]) {
+      const d = Object.getOwnPropertyDescriptor(proto, k);
+      Object.defineProperty(sel, k, { configurable: true, get() { return d.get.call(this); }, set(v) { d.set.call(this, v); ddRefresh(this); } });
+    }
+    new MutationObserver(() => ddRefresh(sel)).observe(sel, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled", "hidden", "selected", "title"] });
+    sel.addEventListener("change", () => ddRefresh(sel));
+    btn.addEventListener("click", e => { e.preventDefault(); if (_ddOpen && _ddOpen.sel === sel) ddClose(); else ddOpen(sel); });
+    btn.addEventListener("keydown", e => {
+      if (["ArrowDown", "ArrowUp", "Enter", " "].includes(e.key)) { e.preventDefault(); ddOpen(sel); }
+    });
+    ddRefresh(sel);
+  }
+  function ddClose(refocus) {
+    const o = _ddOpen; if (!o) return; _ddOpen = null;
+    o.btn.classList.remove("open"); o.btn.setAttribute("aria-expanded", "false");
+    o.menu.classList.add("closing"); setTimeout(() => o.menu.remove(), 120);
+    document.removeEventListener("pointerdown", o.onDown, true); document.removeEventListener("keydown", o.onKey, true);
+    window.removeEventListener("resize", o.onAway); window.removeEventListener("blur", o.onAway); document.removeEventListener("scroll", o.onScroll, true);
+    if (refocus) o.btn.focus();
+  }
+  function ddOpen(sel) {
+    ddClose();
+    const btn = sel._ddBtn; if (!btn || btn.disabled) return;
+    const menu = document.createElement("div");
+    menu.className = "dd-menu"; menu.setAttribute("role", "listbox"); menu.tabIndex = -1;
+    const opts = [...sel.options];
+    menu.innerHTML = opts.map((o, i) => `<div class="dd-opt${i === sel.selectedIndex ? " sel" : ""}${o.disabled ? " dis" : ""}" role="option" data-i="${i}" aria-selected="${i === sel.selectedIndex}" title="${esc(o.text)}"><span class="dd-check">${DD_CHECK}</span><span class="dd-txt">${esc(o.text)}</span></div>`).join("");
+    document.body.appendChild(menu);
+    // place under the button (above when there's no room), at least as wide, clamped to the window
+    const r = btn.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
+    menu.style.minWidth = Math.max(r.width, 140) + "px";
+    const mh = menu.offsetHeight, mw = menu.offsetWidth;
+    const below = vh - r.bottom - 8, above = r.top - 8;
+    const up = mh > below && above > below;
+    menu.style.maxHeight = Math.max(120, (up ? above : below) - 6) + "px";
+    menu.style.top = (up ? Math.max(8, r.top - 6 - Math.min(mh, above)) : r.bottom + 6) + "px";
+    menu.style.left = Math.max(8, Math.min(r.left, vw - mw - 8)) + "px";
+    menu.classList.toggle("up", up);
+    btn.classList.add("open"); btn.setAttribute("aria-expanded", "true");
+    let act = Math.max(0, sel.selectedIndex);
+    const items = [...menu.querySelectorAll(".dd-opt")];
+    const setAct = (i, scroll) => { act = i; items.forEach((el, k) => el.classList.toggle("act", k === i)); if (scroll && items[i]) items[i].scrollIntoView({ block: "nearest" }); };
+    const pick = i => {
+      const o = opts[i]; if (!o || o.disabled) return;
+      const changed = sel.selectedIndex !== i;
+      ddClose(true);
+      if (changed) { sel.selectedIndex = i; sel.dispatchEvent(new Event("input", { bubbles: true })); sel.dispatchEvent(new Event("change", { bubbles: true })); }
+    };
+    setAct(act, true);
+    menu.addEventListener("pointermove", e => { const el = e.target.closest(".dd-opt"); if (el && !el.classList.contains("dis")) setAct(+el.dataset.i, false); });
+    menu.addEventListener("click", e => { const el = e.target.closest(".dd-opt"); if (el) pick(+el.dataset.i); });
+    let typed = "", typedT = 0;
+    const step = (from, d) => { for (let i = from + d; i >= 0 && i < opts.length; i += d) if (!opts[i].disabled) return i; return from; };
+    const onKey = e => {
+      if (e.key === "Escape" || e.key === "Tab") { e.preventDefault(); e.stopPropagation(); ddClose(e.key === "Escape"); return; }
+      if (e.key === "ArrowDown") { e.preventDefault(); e.stopPropagation(); setAct(step(act, 1), true); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); e.stopPropagation(); setAct(step(act, -1), true); }
+      else if (e.key === "Home") { e.preventDefault(); setAct(step(-1, 1), true); }
+      else if (e.key === "End") { e.preventDefault(); setAct(step(opts.length, -1), true); }
+      else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); pick(act); }
+      else if (e.key.length === 1) {   // type-ahead
+        clearTimeout(typedT); typed += e.key.toLowerCase(); typedT = setTimeout(() => typed = "", 700);
+        const i = opts.findIndex(o => !o.disabled && o.text.toLowerCase().startsWith(typed)); if (i >= 0) setAct(i, true);
+      }
+    };
+    const onDown = e => { if (!menu.contains(e.target) && !btn.contains(e.target)) ddClose(); };
+    const onAway = () => ddClose();
+    const onScroll = e => { if (!menu.contains(e.target)) ddClose(); };
+    document.addEventListener("pointerdown", onDown, true); document.addEventListener("keydown", onKey, true);
+    window.addEventListener("resize", onAway); window.addEventListener("blur", onAway); document.addEventListener("scroll", onScroll, true);
+    _ddOpen = { sel, btn, menu, onDown, onKey, onAway, onScroll };
+  }
+  function enhanceSelects(root) { (root || document).querySelectorAll("select").forEach(enhanceSelect); }
+  new MutationObserver(muts => {
+    if (_ddOpen && !_ddOpen.sel.isConnected) ddClose();   // its toolbar was re-rendered underneath (background refresh)
+    for (const m of muts) for (const n of m.addedNodes) {
+      if (n.nodeType !== 1) continue;
+      if (n.tagName === "SELECT") enhanceSelect(n); else if (n.querySelector && n.querySelector("select")) enhanceSelects(n);
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true });
+  enhanceSelects(document);
+
   // ── Theme (splash reads sc_theme; app applies data-theme) ──
   function applyTheme() { document.body.setAttribute("data-theme", state.settings.theme || "spartan"); }
 

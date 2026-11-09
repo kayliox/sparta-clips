@@ -78,6 +78,37 @@ select{field-sizing:content}   /* every dropdown fits its SELECTED text — nati
 input,textarea{caret-color:var(--accent)}
 select option{background:var(--surface-2);color:var(--text)}
 select option:checked{background:var(--surface-3,#26262e);color:#fff}
+/* ── Styled dropdowns (enhanceSelect in app.js): the native <select> stays hidden as the value holder ── */
+select.dd-native{display:none !important}
+.dd-btn{display:inline-flex;align-items:center;justify-content:space-between;gap:.45rem;line-height:1.2;white-space:nowrap;text-align:left;cursor:pointer;min-width:0}
+.dd-btn[hidden]{display:none}
+.dd-btn .dd-label{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.dd-btn .dd-chev{flex:none;opacity:.7;transition:transform .18s ease,opacity .15s}
+.dd-btn:hover .dd-chev{opacity:1}
+.dd-btn.open .dd-chev{transform:rotate(180deg);opacity:1}
+.dd-btn.gal-filter{height:26px;font-weight:600}
+.dd-btn.gal-filter:focus-visible{outline:none;color:var(--text)}
+.dd-btn.gal-filter.open{color:var(--text)}
+.dd-btn.sgdb-field.open{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.dd-menu{position:fixed;z-index:10000;box-sizing:border-box;padding:5px;overflow-y:auto;overscroll-behavior:contain;
+  background:rgba(22,22,28,.97);border:1px solid var(--line-2);border-radius:12px;
+  box-shadow:0 14px 40px rgba(0,0,0,.55),0 2px 8px rgba(0,0,0,.35);backdrop-filter:blur(14px);
+  font-size:var(--text-sm);color:var(--text);outline:none;
+  transform-origin:top center;animation:ddIn .13s ease-out}
+.dd-menu.up{transform-origin:bottom center}
+.dd-menu{max-width:min(380px,calc(100vw - 16px))}
+.dd-opt .dd-txt{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.dd-menu.closing{animation:ddOut .12s ease-in forwards;pointer-events:none}
+@keyframes ddIn{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes ddOut{to{opacity:0;transform:translateY(-3px) scale(.98)}}
+.dd-opt{display:flex;align-items:center;gap:.5rem;padding:.48rem .75rem .48rem .5rem;border-radius:8px;cursor:pointer;white-space:nowrap;line-height:1.2;color:var(--text-2)}
+.dd-opt .dd-check{flex:none;width:14px;height:14px;display:grid;place-items:center;color:var(--accent);opacity:0}
+.dd-opt.sel{color:var(--text);font-weight:650}
+.dd-opt.sel .dd-check{opacity:1}
+.dd-opt.act{background:rgba(var(--accent-rgb),.16);color:var(--text)}
+.dd-opt.dis{opacity:.4;cursor:default}
+.dd-menu::-webkit-scrollbar{width:8px}
+.dd-menu::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:8px;border:2px solid transparent;background-clip:padding-box}
 body{
   display:flex;flex-direction:column;
   color:var(--text);font-family:var(--font);font-size:var(--text-base);line-height:1.45;letter-spacing:.005em;
@@ -425,7 +456,7 @@ body.win-maximized .win-max .ico-restore{display:block}
      most-scrolled surface — and an 18px pass was a measurable per-frame GPU cost on integrated graphics. */
 .gal-search{display:flex;align-items:center;gap:.5rem;flex:1 1 320px;min-width:200px;max-width:520px;padding:.45rem .85rem;
   background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-pill);color:var(--text-3);transition:border-color var(--transition)}
-.gal-search:focus-within{border-color:var(--accent-line)}
+.gal-search:has(input:focus){border-color:var(--accent-line)}   /* the text field only - not the game/type dropdown buttons inside the box */
 .gal-search input{flex:1;min-width:0;background:none;border:none;outline:none;color:var(--text);font-size:var(--text-sm);line-height:1.6;padding:1px 0 1px 1px}   /* line-height: the caret was a 15px sliver jammed against the placeholder */
 .gal-search input::placeholder{color:var(--text-3)}
 .gal-filter{border:0;background:none;color:var(--text-2);font-size:var(--text-xs);font-family:var(--font);cursor:pointer;outline:none;border-left:1px solid var(--line);padding-left:.55rem;max-width:130px}
