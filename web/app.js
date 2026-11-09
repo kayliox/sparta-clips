@@ -1631,6 +1631,31 @@
     }
     return order.map(l => ({ label: l, items: map.get(l) }));
   }
+  // ── Gallery sort (persisted: settings.galSort) + type filter (session). Groups follow the sort: date sorts keep the
+  //    Today / Yesterday / month groups, size and length sorts group into bands, the game sort groups per game. ──
+  const GAL_SORTS = [["new", "Newest"], ["old", "Oldest"], ["big", "Largest"], ["small", "Smallest"], ["long", "Longest"], ["short", "Shortest"], ["game", "Game A–Z"]];
+  let _clipKindFilter = "";
+  function clipType(c) { return c.edited ? "Edited" : (clipKind(c.name) || "Recording"); }
+  function sortGroupClips(list, mode) {
+    const ts = c => c.date ? c.date.getTime() : (c.modified || 0);
+    const cmp = {
+      old: (a, b) => ts(a) - ts(b),
+      big: (a, b) => (b.size || 0) - (a.size || 0) || ts(b) - ts(a),
+      small: (a, b) => (a.size || 0) - (b.size || 0) || ts(b) - ts(a),
+      long: (a, b) => (b.duration || 0) - (a.duration || 0) || ts(b) - ts(a),
+      short: (a, b) => (a.duration || 0) - (b.duration || 0) || ts(b) - ts(a),
+      game: (a, b) => (a.game || "\uffff").localeCompare(b.game || "\uffff", undefined, { sensitivity: "base" }) || ts(b) - ts(a),
+    }[mode] || ((a, b) => ts(b) - ts(a));
+    const s = list.slice().sort(cmp);
+    if (mode !== "big" && mode !== "small" && mode !== "long" && mode !== "short" && mode !== "game") return groupClips(s);
+    const MB = 1048576;
+    const band = mode === "game" ? (c => c.game || "Other")
+      : (mode === "big" || mode === "small") ? (c => { const b = c.size || 0; return b >= 1024 * MB ? "Over 1 GB" : b >= 250 * MB ? "250 MB – 1 GB" : b >= 50 * MB ? "50 – 250 MB" : "Under 50 MB"; })
+      : (c => { const d = c.duration || 0; return d >= 600 ? "Over 10 minutes" : d >= 120 ? "2 – 10 minutes" : d >= 30 ? "30 seconds – 2 minutes" : "Under 30 seconds"; });
+    const out = [];
+    for (const c of s) { const l = band(c); if (!out.length || out[out.length - 1].label !== l) out.push({ label: l, items: [] }); out[out.length - 1].items.push(c); }
+    return out.map(g => ({ label: g.label + "  ·  " + g.items.length, items: g.items }));
+  }
 
   let _vlcWarmed = false;
   function applyGalSearch(host) {
@@ -1667,7 +1692,10 @@
     const _searchFocus = (_ae && _ae.id === "galSearch") ? { s: _ae.selectionStart, e: _ae.selectionEnd } : null;
     const items = _clips.map(c => Object.assign({}, c, parseClip(c.name)));
     const games = [...new Set(items.map(c => c.game).filter(Boolean))].sort();
-    const shown = _clipFilter ? items.filter(c => c.game === _clipFilter) : items;
+    const kinds = ["Recording", "Replay", "Edited"].filter(k => items.some(c => clipType(c) === k));
+    if (_clipKindFilter && !kinds.includes(_clipKindFilter)) _clipKindFilter = "";
+    const sortMode = GAL_SORTS.some(s => s[0] === state.settings.galSort) ? state.settings.galSort : "new";
+    const shown = items.filter(c => (!_clipFilter || c.game === _clipFilter) && (!_clipKindFilter || clipType(c) === _clipKindFilter));
     _galSel.forEach(nm => { if (!_clips.some(c => c.name === nm)) _galSel.delete(nm); });
     const n = _galSel.size;
     const scale = (state.settings.galCardScale | 0) || 100;
@@ -1687,7 +1715,9 @@
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
         <input id="galSearch" type="text" placeholder="Search clips…" autocomplete="off" value="${esc(_clipQuery || "")}">
         <select id="galFilter" class="gal-filter" aria-label="Filter by game"><option value="">All games</option>${games.map(g => `<option value="${esc(g)}" ${g === _clipFilter ? "selected" : ""}>${esc(g)}</option>`).join("")}</select>
+        ${kinds.length > 1 ? `<select id="galKind" class="gal-filter" aria-label="Filter by type"><option value="">All types</option>${kinds.map(k => `<option value="${k}" ${k === _clipKindFilter ? "selected" : ""}>${k === "Replay" ? "Replays" : k === "Recording" ? "Recordings" : k}</option>`).join("")}</select>` : ""}
       </div>
+      <label class="gal-sort" title="Sort clips"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/></svg><select id="galSort" class="gal-filter" aria-label="Sort clips">${GAL_SORTS.map(([v, l]) => `<option value="${v}" ${v === sortMode ? "selected" : ""}>${l}</option>`).join("")}</select></label>
       <div class="gal-actions">${actions}</div>
       <div class="gal-tools">
         <div class="seg gal-size" role="group" aria-label="Thumbnail size">
@@ -1703,8 +1733,10 @@
     const saving = _replaySaving
       ? `<div class="gal-grid"><div class="gal-card gal-saving" aria-busy="true"><div class="gal-thumb"><span class="gal-spinner"></span></div><div class="gal-meta"><div class="gal-name">Saving replay…</div><div class="gal-sub"><span class="gal-when">just now</span></div></div></div></div>`
       : "";
+    const filtered = !!(_clipFilter || _clipKindFilter);
     const body = shown.length
-      ? groupClips(shown).map(g => `<div class="gal-group">${esc(g.label)}</div><div class="gal-grid">${g.items.map(galCardHTML).join("")}</div>`).join("")
+      ? sortGroupClips(shown, sortMode).map(g => `<div class="gal-group">${esc(g.label)}</div><div class="gal-grid">${g.items.map(galCardHTML).join("")}</div>`).join("")
+      : (filtered && items.length) ? `<div class="gal-empty"><h3>No clips match</h3><p>Nothing fits this game and type together.</p><button class="gal-btn" id="galClearFilters">Show all clips</button></div>`
       : ((_replaySaving || !_clipsLoaded) ? "" : `<div class="gal-empty"><div class="gal-empty-omega">Ω</div><h3>No clips yet</h3><p>Press <b>Save replay</b> in the title bar to grab the last moments — or turn Instant replay off in Settings for a manual <b>Record</b> button. New clips appear here automatically.</p><button class="gal-btn primary" id="galEmptySettings">Open capture settings</button></div>`);
     host.innerHTML = `<div class="gallery${_galSelecting ? " selecting" : ""}" style="--gal-scale:${(((state.settings.galCardScale | 0) || 100) / 50)}">${header}${saving}${body}</div>`; paintJobPills();   // the rebuilt toolbar shows a running Create-clip job
     host.scrollTop = prevScroll;
@@ -1713,6 +1745,9 @@
     // Search persists across background re-renders via _clipQuery (fast display filter, no focus loss / no full re-render).
     { const s = $("#galSearch"); if (s) { s.addEventListener("input", () => { _clipQuery = s.value; applyGalSearch(host); }); if (_searchFocus) { s.focus(); try { s.setSelectionRange(_searchFocus.s, _searchFocus.e); } catch {} } } }
     { const f = $("#galFilter"); if (f) f.addEventListener("change", () => { _clipFilter = f.value; renderLibrary(); }); }
+    { const f = $("#galKind"); if (f) f.addEventListener("change", () => { _clipKindFilter = f.value; renderLibrary(); }); }
+    { const f = $("#galSort"); if (f) f.addEventListener("change", () => { state.settings.galSort = f.value; save(); host.scrollTop = 0; renderLibrary(); }); }
+    { const b = $("#galClearFilters"); if (b) b.addEventListener("click", () => { _clipFilter = ""; _clipKindFilter = ""; renderLibrary(); }); }
     host.querySelectorAll(".gal-size .seg-btn").forEach(b => b.addEventListener("click", () => {
       const v = b.dataset.size | 0; state.settings.galCardScale = v; save();
       const g = host.querySelector(".gallery"); if (g) g.style.setProperty("--gal-scale", v / 50);
