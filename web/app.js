@@ -2058,19 +2058,33 @@
   function startClipRectTracking() { window.addEventListener("resize", scheduleWaveRedraw); }
   function stopClipRectTracking() { window.removeEventListener("resize", scheduleWaveRedraw); if (_waveRaf) { cancelAnimationFrame(_waveRaf); _waveRaf = 0; } }
   let _phVis = null;   // while scrubbing: the GLIDING drawn position (seconds) — eases toward _t instead of teleporting
-  // Video-timeline VIEW window (seconds). Normally the whole clip; hold a trim handle 1 s → it zooms to a few-second
-  // window around the handle for micro adjustments (see bindClipHandle). Only the video bar zooms — the audio lanes
-  // keep the full-clip scale.
+  // Timeline VIEW window (seconds) shared by the whole editor timeline — video bar, bookmarks, segments, mic/chat lanes
+  // and their waveforms. Normally the whole clip (_tlV0 = _tlV1 = 0). The scroll wheel zooms it around the cursor
+  // (Shift / sideways = pan, "Fit" resets); holding a trim handle 1 s zooms further for frame-level trims and then
+  // returns to the previous view. Every position (pct) and every pointer → time mapping goes through it.
   let _tlV0 = 0, _tlV1 = 0;
   function tlView() { const d = _clipDur || 0; return _tlV1 > _tlV0 ? [_tlV0, _tlV1] : [0, d]; }
   function tlPct(t) { const [a, b] = tlView(); return b > a ? (t - a) / (b - a) * 100 : 0; }
+  function tlT(f) { const [a, b] = tlView(); return a + f * (b - a); }   // fraction across the bar → seconds
+  function tlSpan() { const [a, b] = tlView(); return b - a; }
+  const tlClamp = p => Math.max(0, Math.min(100, p));
+  const tlOff = p => p < -0.5 || p > 100.5;
   function updatePlayheads() {
     const dur = _clipDur || 0; if (dur <= 0) return;
     const tt = _phVis != null ? _phVis : _t;
-    const lp = Math.max(0, Math.min(100, (tt / dur) * 100)) + "%";
-    const ph = $("#clipPlayhead"), mph = $("#clipMicPlayhead"), cph = $("#clipChatPlayhead");
-    if (ph) { const p = tlPct(tt); ph.style.left = Math.max(0, Math.min(100, p)) + "%"; ph.style.visibility = (p < -0.5 || p > 100.5) ? "hidden" : ""; }
-    if (mph) mph.style.left = lp; if (cph) cph.style.left = lp;
+    // Playing while zoomed: page the view along so the playhead never runs off the edge.
+    if (_playing && _tlV1 > _tlV0 && !_seekDrag && _trimPin < 0 && !_zoomAnim && (tt > _tlV1 || tt < _tlV0)) {
+      const span = _tlV1 - _tlV0, v0 = Math.max(0, Math.min(dur - span, tt - span * 0.08));
+      _tlV0 = v0; _tlV1 = v0 + span; renderClipTl();
+    }
+    const p = tlPct(tt), left = tlClamp(p) + "%", vis = tlOff(p) ? "hidden" : "";
+    for (const id of ["#clipPlayhead", "#clipMicPlayhead", "#clipChatPlayhead"]) { const el = $(id); if (el) { el.style.left = left; el.style.visibility = vis; } }
+  }
+  // Bookmarks + saved segments on the video bar, placed through the view (called on every view change).
+  function positionTlMarks() {
+    const tl = $("#clipTl"); if (!tl) return;
+    tl.querySelectorAll(".clip-mark").forEach(m => { if (!m._bm) return; const p = tlPct(m._bm.t); m.style.left = tlClamp(p) + "%"; m.style.visibility = tlOff(p) ? "hidden" : ""; });
+    tl.querySelectorAll(".clip-seg").forEach(b => { const s = b._seg; if (!s) return; const l = tlClamp(tlPct(s.in)), r = tlClamp(tlPct(s.out)); b.style.left = l + "%"; b.style.width = Math.max(0, r - l) + "%"; });
   }
   let _lastGlyph = "", _lastTimeStr = "", _lastSk = -1;
   function updatePlayBtn() {   // rAF-cadence; only touch the DOM when a value actually changed (time is 1 Hz, glyph rare)
@@ -2211,7 +2225,7 @@
     const dur = _clipDur || 0, list = (state.clipBookmarks && state.clipBookmarks[_clipName]) || [];
     list.forEach(bm => {
       const m = document.createElement("div");
-      m.className = "clip-mark" + (bm.auto ? " auto" : ""); m.style.left = (dur > 0 ? Math.max(0, Math.min(100, bm.t / dur * 100)) : 0) + "%";
+      m.className = "clip-mark" + (bm.auto ? " auto" : ""); m._bm = bm;
       m.title = (bm.auto ? "Auto-highlight: " : "") + (bm.label || "Bookmark") + " · " + clipDur(bm.t);
       m.addEventListener("pointerdown", e => {
         e.stopPropagation(); e.preventDefault();
@@ -2221,8 +2235,8 @@
         const move = ev => {
           if (!moved && Math.abs(ev.clientX - startX) <= 3) return;
           moved = true;
-          const dur = _clipDur || 0; bm.t = snapKf(Math.max(0, Math.min(dur, clipTlPos(ev.clientX) * dur)));
-          m.style.left = (dur > 0 ? bm.t / dur * 100 : 0) + "%";
+          const dur = _clipDur || 0; bm.t = snapKf(Math.max(0, Math.min(dur, tlT(clipTlPos(ev.clientX)))));
+          m.style.left = tlClamp(tlPct(bm.t)) + "%";
           m.title = (bm.label || "Bookmark") + " · " + clipDur(bm.t);
         };
         const up = () => {
@@ -2260,9 +2274,7 @@
     if (tl) tl.querySelectorAll(".clip-seg").forEach(b => b.remove());
     const dur = _clipDur || 0, list = (state.clipSegments && state.clipSegments[_clipName]) || [];
     if (tl && dur > 0) list.forEach(s => {
-      const b = document.createElement("div"); b.className = "clip-seg";
-      b.style.left = Math.max(0, Math.min(100, s.in / dur * 100)) + "%";
-      b.style.width = Math.max(0, Math.min(100, (s.out - s.in) / dur * 100)) + "%";
+      const b = document.createElement("div"); b.className = "clip-seg"; b._seg = s;
       tl.appendChild(b);
     });
     if (wrap) {
@@ -2348,7 +2360,7 @@
     const c = _clips.find(x => x.name === name); if (!c) return;
     const p = parseClip(name);
     navChanged();
-    _clipName = name; _clipDur = c.duration || 0; _clipIn = 0; _clipOut = _clipDur; _tlV0 = _tlV1 = 0; _t = 0; _playing = false; _atEnd = false; _clipKfs = []; _clipAR = (infoMem[name] && infoMem[name].width > 0) ? infoMem[name].width / infoMem[name].height : 0;
+    _clipName = name; _clipDur = c.duration || 0; _clipIn = 0; _clipOut = _clipDur; _tlV0 = _tlV1 = 0; _zoomTo = null; cancelAnimationFrame(_zoomAnim); _zoomAnim = 0; _t = 0; _playing = false; _atEnd = false; _clipKfs = []; _clipAR = (infoMem[name] && infoMem[name].width > 0) ? infoMem[name].width / infoMem[name].height : 0;
     _hasMic = !!c.hasMic; _micBase = 0; _micTlStart = 0; _micTlEnd = _clipDur; _vidVol = 100; _micVol = 100; _micManual = false; _micMuted = state.settings.clipMicMuted === true; _micReadable = true;
     _hasChat = !!c.hasChat; _chatBase = 0; _chatTlStart = 0; _chatTlEnd = _clipDur; _chatVol = 100; _chatManual = false; _chatMuted = state.settings.clipChatMuted === true; _chatReadable = true;
     stopMicSrc(); stopChatSrc(); _micBuf = null; _chatBuf = null;
@@ -2421,7 +2433,7 @@
       fill.style.left = pct(_clipIn) + "%"; fill.style.right = (100 - pct(_clipOut)) + "%";
       fill.classList.toggle("cut-l", out(_clipIn)); fill.classList.toggle("cut-r", out(_clipOut));   // a trim edge outside the zoomed window isn't drawn as a boundary
     }
-    paintTlTicks();
+    paintTlTicks(); positionTlMarks(); paintZoomChip();
     const setTxt = (id, t) => { const e = $(id); if (e) e.textContent = t; };
     setTxt("#clipTlIn", clipTimeFine(_clipIn)); setTxt("#clipTlOut", clipTimeFine(_clipOut));
     setTxt("#clipSelLen", "selection " + clipTimeFine(Math.max(0, _clipOut - _clipIn)));
@@ -2472,24 +2484,29 @@
     if (_laneWaveRaf) return;
     _laneWaveRaf = requestAnimationFrame(() => {
       _laneWaveRaf = 0;
-      if (_hasMic) drawWaveInto($("#clipMicWave"), _micWave, _micTlStart - _micBase, _micTlEnd - _micBase);
-      if (_hasChat) drawWaveInto($("#clipChatWave"), _chatWave, _chatTlStart - _chatBase, _chatTlEnd - _chatBase);
+      const [v0, v1] = tlView();
+      const vis = (s, e) => [Math.max(s, v0), Math.min(e, v1)];
+      if (_hasMic) { const [a, b] = vis(_micTlStart, _micTlEnd); drawWaveInto($("#clipMicWave"), _micWave, a - _micBase, b - _micBase); }
+      if (_hasChat) { const [a, b] = vis(_chatTlStart, _chatTlEnd); drawWaveInto($("#clipChatWave"), _chatWave, a - _chatBase, b - _chatBase); }
     });
+  }
+  function placeLaneBlock(block, s, e) {   // a lane block clipped to the view; an edge outside it hides that handle
+    if (!block) return;
+    const ps = tlPct(s), pe = tlPct(e), l = tlClamp(ps), r = tlClamp(pe);
+    block.style.left = l + "%"; block.style.width = Math.max(0, r - l) + "%";
+    block.classList.toggle("cut-l", ps < -0.5); block.classList.toggle("cut-r", pe > 100.5);
+    block.style.visibility = (pe < 0 || ps > 100) ? "hidden" : "";
   }
   function renderMicLane() {
     if (!_hasMic) return;
-    const dur = _clipDur || 0, pct = x => (dur > 0 ? Math.max(0, Math.min(100, (x / dur) * 100)) : 0);
-    const block = $("#clipMicClip");
-    if (block) { block.style.left = pct(_micTlStart) + "%"; block.style.width = Math.max(0, pct(_micTlEnd) - pct(_micTlStart)) + "%"; }
+    placeLaneBlock($("#clipMicClip"), _micTlStart, _micTlEnd);
     scheduleLaneWaves();
     const setTxt = (id, t) => { const el = $(id); if (el) el.textContent = t; };
     setTxt("#clipMicTlIn", clipTimeFine(_micTlStart)); setTxt("#clipMicTlOut", clipTimeFine(_micTlEnd));
   }
   function renderChatLane() {
     if (!_hasChat) return;
-    const dur = _clipDur || 0, pct = x => (dur > 0 ? Math.max(0, Math.min(100, (x / dur) * 100)) : 0);
-    const block = $("#clipChatClip");
-    if (block) { block.style.left = pct(_chatTlStart) + "%"; block.style.width = Math.max(0, pct(_chatTlEnd) - pct(_chatTlStart)) + "%"; }
+    placeLaneBlock($("#clipChatClip"), _chatTlStart, _chatTlEnd);
     scheduleLaneWaves();
     const setTxt = (id, t) => { const el = $(id); if (el) el.textContent = t; };
     setTxt("#clipChatTlIn", clipTimeFine(_chatTlStart)); setTxt("#clipChatTlOut", clipTimeFine(_chatTlEnd));
@@ -2519,9 +2536,12 @@
     const zoomed = _tlV1 > _tlV0;
     if (!zoomed) { if (tk) tk.style.opacity = "0"; return; }
     if (!tk) { tk = document.createElement("div"); tk.className = "clip-tl-ticks"; tl.insertBefore(tk, tl.firstChild); }
-    const w = tl.clientWidth || 1, pps = w / (_tlV1 - _tlV0), off = -(_tlV0 % 1) * pps;
-    tk.style.backgroundSize = `${pps}px 100%, ${pps / 10}px 100%`;
-    tk.style.backgroundPosition = `${off}px 0, ${off}px 0`;
+    // Major ticks at the first "nice" step that's ≥ 70 px apart, minor ticks a fifth (or half) of that.
+    const w = tl.clientWidth || 1, pps = w / (_tlV1 - _tlV0);
+    const maj = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800].find(s => s * pps >= 70) || 3600;
+    let min = maj / 5; if (min * pps < 9) min = maj / 2;
+    tk.style.backgroundSize = `${maj * pps}px 100%, ${min * pps}px 100%`;
+    tk.style.backgroundPosition = `${-(_tlV0 % maj) * pps}px 0, ${-(_tlV0 % min) * pps}px 0`;
     tk.style.opacity = "1";
   }
   // Animate the view window (zoom in / out) with an ease-out; renders the bar + playhead every frame.
@@ -2538,6 +2558,47 @@
     };
     _zoomAnim = requestAnimationFrame(step);
   }
+  // ── Scroll-wheel zoom on the timeline: wheel up = zoom in around the cursor, down = out; Shift+wheel or a sideways
+  //    swipe pans. Notches accumulate into a target view that eases in (140 ms), so a fast spin stays smooth. ──
+  let _zoomTo = null;
+  function setTlView(v0, v1, ms) {
+    const dur = _clipDur || 0; if (dur <= 0) return;
+    const full = v1 - v0 >= dur - 1e-6;
+    _zoomTo = [v0, v1];
+    animateTlView(v0, v1, ms == null ? 140 : ms, () => { _zoomTo = null; if (full) { _tlV0 = _tlV1 = 0; renderClipTl(); updatePlayheads(); } });
+  }
+  function zoomTlAround(f, factor) {   // f = cursor's fraction across the bar (stays under the cursor)
+    const dur = _clipDur || 0; if (dur <= 0.5) return;
+    const [c0, c1] = _zoomTo || tlView();
+    const span = Math.max(Math.min(dur, 0.5), Math.min(dur, (c1 - c0) * factor));
+    const at = c0 + f * (c1 - c0);
+    const v0 = Math.max(0, Math.min(dur - span, at - f * span));
+    setTlView(v0, v0 + span);
+  }
+  function panTl(sec) {
+    const dur = _clipDur || 0; const [c0, c1] = _zoomTo || tlView(), span = c1 - c0;
+    if (span >= dur - 1e-6) return;
+    const v0 = Math.max(0, Math.min(dur - span, c0 + sec));
+    setTlView(v0, v0 + span, 90);
+  }
+  function paintZoomChip() {
+    const chip = $("#clipZoom"); if (!chip) return;
+    const dur = _clipDur || 0, span = tlSpan(), on = dur > 0 && _tlV1 > _tlV0 && span < dur - 0.01;
+    chip.hidden = !on;
+    const tl = $("#clipTl"); if (tl) tl.classList.toggle("zoomed", _tlV1 > _tlV0);
+    if (on) { const t = $("#clipZoomTxt"); if (t) t.textContent = (dur / span >= 10 ? Math.round(dur / span) : (dur / span).toFixed(1)) + "× · " + clipTimeFine(span) + " shown"; }
+  }
+  { const ed = $(".clip-editor"); if (ed) ed.addEventListener("wheel", e => {
+      const lane = e.target.closest(".clip-tl"); if (!lane || _trimPin >= 0) return;   // only over a timeline; a handle drag owns the view
+      e.preventDefault();
+      const r = lane.getBoundingClientRect(); if (!r.width) return;
+      const unit = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
+      const dx = e.deltaX * unit, dy = e.deltaY * unit;
+      if (e.shiftKey || Math.abs(dx) > Math.abs(dy)) { panTl(((Math.abs(dx) > Math.abs(dy) ? dx : dy) / r.width) * tlSpan() * 1.2); return; }
+      const f = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+      zoomTlAround(f, Math.pow(1.25, Math.max(-4, Math.min(4, dy / 100))));   // one notch (100) = 25%
+  }, { passive: false }); }
+  { const b = $("#clipZoomFit"); if (b) b.addEventListener("click", () => setTlView(0, _clipDur || 0, 200)); }
   // The playhead follows a dragged trim handle (it marks where the trimmed clip starts / ends); -1 = no handle drag.
   let _trimPin = -1;
   function bindClipHandle(id, which) {
@@ -2552,14 +2613,15 @@
       // Hold still ~1 s → FINE ADJUST: the bar zooms to a few-second window anchored on the handle (it stays under the
       // cursor while the scale expands around it). Moving first = a normal coarse drag. Holding near either end of the
       // zoomed bar pans the window so the fine drag isn't boxed in.
-      const downX = e.clientX; let lastX = e.clientX, zoomed = false, panRaf = 0, panTs = 0;
+      const downX = e.clientX; let lastX = e.clientX, zoomed = false, panRaf = 0, panTs = 0, prevView = null;
       const enterZoom = () => {
         const dur = _clipDur || 0; if (dur <= 0.5) return;
-        zoomed = true;
-        const span = Math.min(dur, Math.max(2, Math.min(8, dur / 12)));   // adaptive: ~1/12 of the clip, 2-8 s
+        zoomed = true; prevView = _tlV1 > _tlV0 ? [_tlV0, _tlV1] : null;
+        const span = Math.min(tlSpan(), Math.max(2, Math.min(8, dur / 12)));   // adaptive: ~1/12 of the clip, 2-8 s (never zooms OUT of a deeper wheel zoom)
         const ed = edge(), f = ed / dur;                                   // keep the handle at its screen position
-        tl && tl.classList.add("zoomed");
-        animateTlView(ed - f * span, ed - f * span + span, 240);
+        const [c0, c1] = tlView(), fv = (ed - c0) / ((c1 - c0) || 1);   // keep the handle at its screen position
+        tl && tl.classList.add("zoomed", "fine");
+        animateTlView(ed - fv * span, ed - fv * span + span, 240);
         showToast("Fine adjust", "Zoomed to " + (Math.round(span * 10) / 10) + " s — slide for frame-level trims, release to zoom out.");
         try { navigator.vibrate && navigator.vibrate(10); } catch {}
         panRaf = requestAnimationFrame(panTick);
@@ -2605,7 +2667,12 @@
         endTlDrag(); document.body.classList.remove("clip-trim-drag");
         document.removeEventListener("pointermove", move); document.removeEventListener("pointerup", up); document.removeEventListener("pointercancel", up);
         _trimPin = -1; seekExact(edge());   // land exactly on the trim point (frame-exact preview + playhead)
-        if (zoomed) { const dur = _clipDur || 0; animateTlView(0, dur, 220, () => { _tlV0 = _tlV1 = 0; tl && tl.classList.remove("zoomed"); renderClipTl(); updatePlayheads(); }); }
+        if (zoomed) {
+          tl && tl.classList.remove("fine");
+          const dur = _clipDur || 0;
+          if (prevView) animateTlView(prevView[0], prevView[1], 220);   // back to the scroll-wheel zoom you had
+          else animateTlView(0, dur, 220, () => { _tlV0 = _tlV1 = 0; renderClipTl(); updatePlayheads(); });
+        }
       };
       document.addEventListener("pointermove", move); document.addEventListener("pointerup", up); document.addEventListener("pointercancel", up);
     });
@@ -2616,7 +2683,7 @@
       e.preventDefault(); e.stopPropagation(); try { h.setPointerCapture(e.pointerId); } catch {}
       beginTlDrag();
       const move = ev => {
-        const dur = _clipDur || 0, t = clipTlPos(ev.clientX) * dur;
+        const dur = _clipDur || 0, t = tlT(clipTlPos(ev.clientX));
         if (which === "in") _micTlStart = Math.max(_micBase, Math.min(t, _micTlEnd - 0.2));
         else _micTlEnd = Math.min(dur, Math.max(t, _micTlStart + 0.2));
         _micManual = true;
@@ -2632,7 +2699,7 @@
       e.preventDefault(); e.stopPropagation(); try { h.setPointerCapture(e.pointerId); } catch {}
       beginTlDrag();
       const move = ev => {
-        const dur = _clipDur || 0, t = clipTlPos(ev.clientX) * dur;
+        const dur = _clipDur || 0, t = tlT(clipTlPos(ev.clientX));
         if (which === "in") _chatTlStart = Math.max(_chatBase, Math.min(t, _chatTlEnd - 0.2));
         else _chatTlEnd = Math.min(dur, Math.max(t, _chatTlStart + 0.2));
         _chatManual = true;
@@ -2648,10 +2715,10 @@
       if (e.target.closest(".clip-handle")) return;
       e.preventDefault(); e.stopPropagation(); try { block.setPointerCapture(e.pointerId); } catch {}
       beginTlDrag();
-      const dur = _clipDur || 0, x0 = clipTlPos(e.clientX), b0 = _micBase, s0 = _micTlStart, e0 = _micTlEnd;
+      const dur = _clipDur || 0, span = tlSpan(), x0 = clipTlPos(e.clientX), b0 = _micBase, s0 = _micTlStart, e0 = _micTlEnd;
       const move = ev => {
-        let d = (clipTlPos(ev.clientX) - x0) * dur;
-        const snap = Math.max(0.3, dur * 0.01);
+        let d = (clipTlPos(ev.clientX) - x0) * span;
+        const snap = Math.max(0.03, Math.min(0.3, span * 0.01));
         if (Math.abs(b0 + d) <= snap) d = -b0;
         if (s0 + d < 0) d = -s0;
         if (e0 + d > dur) d = dur - e0;
@@ -2669,10 +2736,10 @@
       if (e.target.closest(".clip-handle")) return;
       e.preventDefault(); e.stopPropagation(); try { block.setPointerCapture(e.pointerId); } catch {}
       beginTlDrag();
-      const dur = _clipDur || 0, x0 = clipTlPos(e.clientX), b0 = _chatBase, s0 = _chatTlStart, e0 = _chatTlEnd;
+      const dur = _clipDur || 0, span = tlSpan(), x0 = clipTlPos(e.clientX), b0 = _chatBase, s0 = _chatTlStart, e0 = _chatTlEnd;
       const move = ev => {
-        let d = (clipTlPos(ev.clientX) - x0) * dur;
-        const snap = Math.max(0.3, dur * 0.01);
+        let d = (clipTlPos(ev.clientX) - x0) * span;
+        const snap = Math.max(0.03, Math.min(0.3, span * 0.01));
         if (Math.abs(b0 + d) <= snap) d = -b0;
         if (s0 + d < 0) d = -s0;
         if (e0 + d > dur) d = dur - e0;
@@ -2713,10 +2780,10 @@
       // frame-exact — so scrubbing lands precisely on where the clip begins/ends. The knob turns accent while stuck.
       const SNAP_PX = 10;
       const tAt = x => {
-        const dur = _clipDur || 0, t = clipTlPos(x + grabOff) * dur;
+        const dur = _clipDur || 0, t = tlT(clipTlPos(x + grabOff));
         snapped = false;
         if (dur > 0 && clipSelActive() && _tlRect && _tlRect.width) {
-          const px = s => s / dur * _tlRect.width;
+          const [v0, v1] = tlView(), px = s => (s - v0) / (v1 - v0) * _tlRect.width;
           for (const edge of [_clipIn, _clipOut]) if (Math.abs(px(t) - px(edge)) <= SNAP_PX) { snapped = true; return edge; }
         }
         return t;
