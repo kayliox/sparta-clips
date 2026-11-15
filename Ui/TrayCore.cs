@@ -446,6 +446,74 @@ namespace SpartaClips
             _autoTimer = new System.Windows.Forms.Timer { Interval = 1500 };
             _autoTimer.Tick += (s, e) => AutoTick();
             _autoTimer.Start();
+            _memTimer = new System.Windows.Forms.Timer { Interval = 30_000 };
+            _memTimer.Tick += (s, e) => MemoryGuardTick();
+            _memTimer.Start();
+        }
+
+        // ── Memory guard ──
+        // A recorder whose GPU encoder wedges can't be freed in-process (ClipRecorder.NativeStuckSince): 2026-11-15 one
+        // stuck AMD H.264 encoder pinned a 4 GB block and the tray app sat at 5 GB for hours. The cure is a fresh process,
+        // so recycle — but only at a moment the user can't lose anything: no manual recording, no replay save/rotation,
+        // no ffmpeg job (export/trim/AV1), the window closed, and not while the buffer is capturing a game (that would
+        // drop up to a minute of replay history). Past HardLimit the game condition is waived.
+        private System.Windows.Forms.Timer? _memTimer;
+        internal static long SoftLimit = 2L << 30, HardLimit = 6L << 30;   // not const: the recycle test lowers them
+        private bool _recycling;
+        private readonly DateTime _started = DateTime.Now;
+        private void MemoryGuardTick()
+        {
+            if (Quitting || _recycling) return;
+            try
+            {
+#if CDP_HOOK
+                // Test hook (-TestHooks builds only): a ".test-stuck" file stands in for a wedged encoder.
+                string probe = System.IO.Path.Combine(AppConfig.Dir, ".test-stuck");
+                if (System.IO.File.Exists(probe)) { System.IO.File.Delete(probe); ClipRecorder.NativeStuckSince ??= DateTime.UtcNow; DiagLog.Line("APP", "test: recorder marked stuck"); }
+#endif
+                long priv; using (var me = System.Diagnostics.Process.GetCurrentProcess()) priv = me.PrivateMemorySize64;
+                bool stuck = ClipRecorder.NativeStuckSince != null;
+                if (!stuck && priv < SoftLimit) return;
+                // Memory alone never recycles a young process (no restart loop if a session is legitimately big).
+                if (!stuck && DateTime.Now - _started < TimeSpan.FromMinutes(10)) return;
+                if (ClipRecorder.IsRecording || ClipRecorder.ReplayBusy || WindowIsOpen() || FfmpegRunning()) return;
+                if (ClipRecorder.CapturingWindow && priv < HardLimit) return;
+                RecycleApp((stuck ? "a recorder got stuck in the GPU encoder" : "memory grew") + ", using " + (priv >> 20) + " MB");
+            }
+            catch (Exception ex) { try { DiagLog.Line("APP", "memory guard err: " + ex.Message); } catch { } }
+        }
+        private static bool FfmpegRunning()
+        {
+            string tools = System.IO.Path.Combine(AppConfig.Dir, "tools");
+            foreach (var name in new[] { "ffmpeg", "ffprobe" })
+            {
+                var ps = System.Diagnostics.Process.GetProcessesByName(name);
+                try
+                {
+                    foreach (var p in ps)
+                    {
+                        try { if ((p.MainModule?.FileName ?? "").StartsWith(tools, StringComparison.OrdinalIgnoreCase)) return true; } catch { return true; }   // can't tell → assume ours
+                    }
+                }
+                finally { foreach (var p in ps) p.Dispose(); }
+            }
+            return false;
+        }
+        /// <summary>Restart the app to the tray in a fresh process (the watchdog relaunches it with --recycled).</summary>
+        internal void RecycleApp(string why)
+        {
+            if (_recycling) return;
+            _recycling = true; Quitting = true;
+            DiagLog.Line("APP", "recycling the app: " + why);
+            Watchdog.MarkRecycle();
+            try { ClipHotkeyHook.Uninstall(); } catch { }
+            try { _autoTimer?.Stop(); _memTimer?.Stop(); _gameWatch?.Stop(); _updTimer?.Stop(); } catch { }
+            try { Task.Run(async () => { try { await ClipRecorder.DisarmAsync(); } catch { } }).Wait(5000); } catch { }
+            try { _tray.Visible = false; _tray.Dispose(); } catch { }
+            // Terminate, don't unwind: the wedged encoder threads can hang a normal shutdown in DLL detach forever —
+            // which is exactly the state being escaped. Everything worth keeping (config, clips, logs) is on disk.
+            try { DiagLog.Line("APP", "recycle: exiting"); } catch { }
+            try { System.Diagnostics.Process.GetCurrentProcess().Kill(); } catch { Environment.Exit(0); }
         }
         private static bool ProcRunning(string exe)
         {
