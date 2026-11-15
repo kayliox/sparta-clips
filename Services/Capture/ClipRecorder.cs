@@ -1253,10 +1253,19 @@ namespace SpartaClips
         }
 
         // Replace a dead segment recorder (identity-checked: a rotate/save may already have rolled a new one).
-        // The 1 s damp keeps a persistently-failing source (display unplugged) from spinning restart loops.
+        // The damp keeps a persistently-failing source (display unplugged) from spinning restart loops. It BACKS OFF
+        // (1, 2, 4 … 30 s) while failures keep coming: 2026-11-15 a wedged GPU made every new recorder fail with
+        // "Failed to initialize DirectX" and the old fixed 1 s retry built ~30 recorders in a minute, each leaving
+        // AMF worker threads behind. A failure after a quiet minute starts the ladder over at 1 s.
+        private static int _segFailRun; private static DateTime _segFailLast;
         private static async Task RestartFailedSegmentAsync(Recorder failed)
         {
-            await Task.Delay(1000);
+            var now = DateTime.UtcNow;
+            _segFailRun = now - _segFailLast < TimeSpan.FromSeconds(60) ? Math.Min(_segFailRun + 1, 6) : 0;
+            _segFailLast = now;
+            int delayMs = Math.Min(30_000, 1000 << _segFailRun);
+            if (_segFailRun > 0) DiagLog.Line("CLIP", "replay segment keeps failing — retrying in " + delayMs / 1000 + " s");
+            await Task.Delay(delayMs);
             await _repGate.WaitAsync();
             try
             {
@@ -1307,9 +1316,21 @@ namespace SpartaClips
                 // A stuck recorder may also hang in Dispose — tear it down on its own thread, OUTSIDE the dispose chain, so
                 // it can never delay the next recorder. Its half-written file is unusable (no moov); the next sweep removes it.
                 var stuck = rec; _ = Task.Run(() => { try { stuck.Dispose(); } catch { } });
+                // Its native half never comes back: the encoder threads stay parked on a GPU sync object and keep every
+                // buffer they own. Measured 2026-11-15: one AMD H.264 encoder stuck this way held a single zeroed 4 GB
+                // heap block + 70 idle amdxx64 worker threads (app at 5 GB). No in-process call frees it — TrayCore's
+                // memory guard sees this flag and recycles the process at the next safe moment.
+                NativeStuckSince ??= DateTime.UtcNow;
             }
             return path;
         }
+
+        /// <summary>Set once a recorder had to be abandoned stuck (its native memory is lost until the process exits).</summary>
+        public static DateTime? NativeStuckSince { get; internal set; }
+        /// <summary>True while a replay save / rotation / restart holds the buffer.</summary>
+        public static bool ReplayBusy => _repGate.CurrentCount == 0;
+        /// <summary>True while the replay buffer is capturing a window (a game) rather than the desktop.</summary>
+        public static bool CapturingWindow => _armed && _capKind == "window";
 
         // Stitch the last N seconds (prev tail + current) into a Game_…_replay.mp4. Returns the new name, or null.
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _segStart = new();

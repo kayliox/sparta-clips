@@ -50,6 +50,16 @@ namespace SpartaClips
                 try { app.WaitForExit(); } catch { return; }
                 int code = 0; try { code = app.ExitCode; } catch { }
                 if (WasClean(pid)) return;
+                if (WasRecycle(pid))
+                {
+                    // Deliberate memory recycle: relaunch quietly (no "stopped unexpectedly" notice, not counted as a crash).
+                    for (int i = 0; i < 20 && Mutex.TryOpenExisting(Program.InstanceMutexName, out var held); i++) { held.Dispose(); Thread.Sleep(250); }
+                    if (GetSystemMetrics(0x2000 /*SM_SHUTTINGDOWN*/) != 0) return;
+                    Log("app recycled itself (memory) — relaunching to the tray");
+                    try { Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "--tray --recycled") { UseShellExecute = false }); }
+                    catch (Exception ex) { Log("relaunch failed: " + ex.Message); }
+                    return;
+                }
 
                 Thread.Sleep(3000);   // an installer / Windows shutdown / taskkill /IM gets to finish (and to stop us) first
                 if (GetSystemMetrics(0x2000 /*SM_SHUTTINGDOWN*/) != 0) return;
@@ -61,6 +71,17 @@ namespace SpartaClips
                 try { Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "--tray --recovered") { UseShellExecute = false }); }
                 catch (Exception ex) { Log("restart failed: " + ex.Message); }
             }
+        }
+
+        private static string RecyclePath => Path.Combine(AppConfig.Dir, ".recycle");
+        /// <summary>The app is about to restart itself on purpose (TrayCore memory guard) — relaunch it quietly.</summary>
+        public static void MarkRecycle()
+        {
+            try { Directory.CreateDirectory(AppConfig.Dir); File.WriteAllText(RecyclePath, Environment.ProcessId.ToString()); } catch { }
+        }
+        private static bool WasRecycle(int pid)
+        {
+            try { bool r = File.Exists(RecyclePath) && File.ReadAllText(RecyclePath).Trim() == pid.ToString(); if (r) File.Delete(RecyclePath); return r; } catch { return false; }
         }
 
         private static bool WasClean(int pid)
