@@ -44,6 +44,8 @@ namespace SpartaClips
 
             // Recorder → native toast (ALWAYS, so failures reach the user with no window open — the whole tray-first premise)
             // + JS (when a window is open). Owned here, not the bridge, so it fires tray-only.
+            // A replay save that found the buffer dead → restart now rather than at the next 2-minute check.
+            ClipRecorder.ReplayBroken += () => { try { _ui.BeginInvoke(new Action(() => { if (!Quitting && !_recycling) DeadReplayCheck(urgent: true); })); } catch { } };
             ClipRecorder.Notify = (ev, json) =>
             {
                 try
@@ -55,6 +57,7 @@ namespace SpartaClips
                     else if (ev == "recfail")   Toast(ToastKind.Error,   "Recording failed", JsonField(json, "reason") ?? "Try again in a moment");
                     else if (ev == "trimfail")  Toast(ToastKind.Error,   "Couldn't save the replay", "Try again in a moment");
                     else if (ev == "noreplay")  Toast(ToastKind.Warning, "Nothing to save yet", "Instant replay isn't running");
+                    else if (ev == "replaybroken") Toast(ToastKind.Error, "Instant replay stopped recording", "Restarting it now — it will be ready again in a few seconds");
                     else if (ev == "av1fail")   Toast(ToastKind.Warning, "Saved as H.264", "AV1 conversion failed — your clip is safe");
                     else if (ev == "micfail")   Toast(ToastKind.Error,   "Microphone unavailable", "Check Windows microphone privacy settings");
                     else if (ev == "disklow")   Toast(ToastKind.Warning, "Disk almost full", "Recording stopped and saved");
@@ -104,6 +107,12 @@ namespace SpartaClips
             {
                 var t = new System.Windows.Forms.Timer { Interval = 2500 };
                 t.Tick += (s, e) => { t.Stop(); t.Dispose(); Toast(ToastKind.Warning, "Sparta Clips restarted", "It stopped unexpectedly — instant replay is running again"); };
+                t.Start();
+            }
+            if (Array.Exists(Environment.GetCommandLineArgs(), a => string.Equals(a, "--recycled-replay", StringComparison.OrdinalIgnoreCase)))
+            {
+                var t = new System.Windows.Forms.Timer { Interval = 2500 };
+                t.Tick += (s, e) => { t.Stop(); t.Dispose(); Toast(ToastKind.Success, "Instant replay is back", "It had stopped recording — Sparta Clips restarted it"); };
                 t.Start();
             }
             if (JustUpdated)
@@ -470,7 +479,12 @@ namespace SpartaClips
                 // Test hook (-TestHooks builds only): a ".test-stuck" file stands in for a wedged encoder.
                 string probe = System.IO.Path.Combine(AppConfig.Dir, ".test-stuck");
                 if (System.IO.File.Exists(probe)) { System.IO.File.Delete(probe); ClipRecorder.NativeStuckSince ??= DateTime.UtcNow; DiagLog.Line("APP", "test: recorder marked stuck"); }
+                // ".test-deadreplay" = the buffer has been failing for 3 min; ".test-deadsave" = failing now + a replay save.
+                string dead = System.IO.Path.Combine(AppConfig.Dir, ".test-deadreplay"), deadSave = System.IO.Path.Combine(AppConfig.Dir, ".test-deadsave");
+                if (System.IO.File.Exists(dead)) { System.IO.File.Delete(dead); ClipRecorder.ReplayFailingSince = DateTime.UtcNow.AddMinutes(-3); DiagLog.Line("APP", "test: replay marked dead"); }
+                if (System.IO.File.Exists(deadSave)) { System.IO.File.Delete(deadSave); ClipRecorder.ReplayFailingSince = DateTime.UtcNow; DiagLog.Line("APP", "test: dead replay + save"); _ = ClipRecorder.SaveReplayAsync(); return; }
 #endif
+                if (DeadReplayCheck(urgent: false)) return;
                 long priv; using (var me = System.Diagnostics.Process.GetCurrentProcess()) priv = me.PrivateMemorySize64;
                 bool stuck = ClipRecorder.NativeStuckSince != null;
                 if (!stuck && priv < SoftLimit) return;
@@ -482,6 +496,40 @@ namespace SpartaClips
             }
             catch (Exception ex) { try { DiagLog.Line("APP", "memory guard err: " + ex.Message); } catch { } }
         }
+        // ── Dead replay buffer ──
+        // 2026-11-15: the pinned game closed and from then on every new buffer recorder in THIS process failed
+        // ("Failed to initialize DirectX", ~1,700 times over 14 h) while a fresh process recorded at once — so every
+        // replay save failed. A buffer that has not recorded for 2 minutes (or a save that finds it dead) recycles the
+        // app. Never during a manual recording / ffmpeg job or while the user is looking at the window (a window open in
+        // the background just closes; the tray reopens it). At most once per 20 min, so a truly missing display (all
+        // monitors off) can't restart-loop.
+        private bool DeadReplayCheck(bool urgent)
+        {
+            var since = ClipRecorder.ReplayFailingSince;
+            if (since == null || !ClipRecorder.IsReplayArmed) return false;
+            if (!urgent && DateTime.UtcNow - since.Value < TimeSpan.FromMinutes(2)) return false;
+            if (ClipRecorder.IsRecording || FfmpegRunning() || WindowIsForeground()) return false;
+            string stamp = System.IO.Path.Combine(AppConfig.Dir, ".replay-recycled");
+            try
+            {
+                if (System.IO.File.Exists(stamp) && DateTime.UtcNow - System.IO.File.GetLastWriteTimeUtc(stamp) < TimeSpan.FromMinutes(20))
+                {
+                    if (!_deadReplayHeld) DiagLog.Line("APP", "replay buffer is dead but the app already restarted for that < 20 min ago — leaving it");
+                    _deadReplayHeld = true;
+                    return false;
+                }
+                System.IO.File.WriteAllText(stamp, DateTime.UtcNow.ToString("o"));
+            }
+            catch { }
+            RecycleApp("the replay buffer has not recorded since " + since.Value.ToLocalTime().ToString("HH:mm:ss"), "replay");
+            return true;
+        }
+        private bool _deadReplayHeld;
+        private bool WindowIsForeground()
+        {
+            try { return WindowIsOpen() && GetForegroundWindow() == _win!.Handle; } catch { return false; }
+        }
+
         private static bool FfmpegRunning()
         {
             string tools = System.IO.Path.Combine(AppConfig.Dir, "tools");
@@ -500,12 +548,13 @@ namespace SpartaClips
             return false;
         }
         /// <summary>Restart the app to the tray in a fresh process (the watchdog relaunches it with --recycled).</summary>
-        internal void RecycleApp(string why)
+        internal void RecycleApp(string why, string reason = "memory")
         {
             if (_recycling) return;
             _recycling = true; Quitting = true;
             DiagLog.Line("APP", "recycling the app: " + why);
-            Watchdog.MarkRecycle();
+            Watchdog.MarkRecycle(reason);
+            try { _win?.Close(); } catch { }
             try { ClipHotkeyHook.Uninstall(); } catch { }
             try { _autoTimer?.Stop(); _memTimer?.Stop(); _gameWatch?.Stop(); _updTimer?.Stop(); } catch { }
             try { Task.Run(async () => { try { await ClipRecorder.DisarmAsync(); } catch { } }).Wait(5000); } catch { }

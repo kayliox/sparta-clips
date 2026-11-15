@@ -50,13 +50,13 @@ namespace SpartaClips
                 try { app.WaitForExit(); } catch { return; }
                 int code = 0; try { code = app.ExitCode; } catch { }
                 if (WasClean(pid)) return;
-                if (WasRecycle(pid))
+                if (WasRecycle(pid) is string why)
                 {
                     // Deliberate memory recycle: relaunch quietly (no "stopped unexpectedly" notice, not counted as a crash).
                     for (int i = 0; i < 20 && Mutex.TryOpenExisting(Program.InstanceMutexName, out var held); i++) { held.Dispose(); Thread.Sleep(250); }
                     if (GetSystemMetrics(0x2000 /*SM_SHUTTINGDOWN*/) != 0) return;
-                    Log("app recycled itself (memory) — relaunching to the tray");
-                    try { Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "--tray --recycled") { UseShellExecute = false }); }
+                    Log("app recycled itself (" + why + ") — relaunching to the tray");
+                    try { Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "--tray --recycled" + (why == "replay" ? " --recycled-replay" : "")) { UseShellExecute = false }); }
                     catch (Exception ex) { Log("relaunch failed: " + ex.Message); }
                     return;
                 }
@@ -75,13 +75,21 @@ namespace SpartaClips
 
         private static string RecyclePath => Path.Combine(AppConfig.Dir, ".recycle");
         /// <summary>The app is about to restart itself on purpose (TrayCore memory guard) — relaunch it quietly.</summary>
-        public static void MarkRecycle()
+        public static void MarkRecycle(string reason = "memory")
         {
-            try { Directory.CreateDirectory(AppConfig.Dir); File.WriteAllText(RecyclePath, Environment.ProcessId.ToString()); } catch { }
+            try { Directory.CreateDirectory(AppConfig.Dir); File.WriteAllText(RecyclePath, Environment.ProcessId + " " + reason); } catch { }
         }
-        private static bool WasRecycle(int pid)
+        private static string? WasRecycle(int pid)   // the recycle reason, or null when it was not a recycle
         {
-            try { bool r = File.Exists(RecyclePath) && File.ReadAllText(RecyclePath).Trim() == pid.ToString(); if (r) File.Delete(RecyclePath); return r; } catch { return false; }
+            try
+            {
+                if (!File.Exists(RecyclePath)) return null;
+                var parts = File.ReadAllText(RecyclePath).Trim().Split(' ', 2);
+                if (parts[0] != pid.ToString()) return null;
+                File.Delete(RecyclePath);
+                return parts.Length > 1 ? parts[1] : "memory";
+            }
+            catch { return null; }
         }
 
         private static bool WasClean(int pid)

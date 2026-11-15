@@ -1162,6 +1162,15 @@ namespace SpartaClips
                 // save is queued; without this, the paths below called StartSegment() on a DISARMED engine, spawning an
                 // orphan recorder (no rotation timer, nothing ever stops it) that captured to TEMP until process exit.
                 if (!_armed) { DiagLog.Line("CLIP", "save replay: disarmed while queued — skipped"); Notify?.Invoke("noreplay", "{}"); return; }
+                // A dead buffer has nothing to save — say so (before: "compose err: Unable to find the specified file"
+                // and a "Couldn't write the clip from that selection" toast) and let TrayCore restart the app now.
+                if (ReplayFailingSince != null)
+                {
+                    DiagLog.Line("CLIP", "save replay: the buffer is not recording (failing since " + ReplayFailingSince.Value.ToLocalTime().ToString("HH:mm:ss") + ")");
+                    Notify?.Invoke("replaybroken", "{}");
+                    try { ReplayBroken?.Invoke(); } catch { }
+                    return;
+                }
                 // Snapshot the mic/chat rings FIRST — they keep rolling during the stop/concat (and the AV1 transcode,
                 // which can take a minute), so a late DumpRing captured audio from AFTER the save point. Temp wavs in
                 // the buffer dir → moved next to the finished clip on success, deleted on failure.
@@ -1237,16 +1246,21 @@ namespace SpartaClips
             SyncGameRing();
             if (_chat && !_chatSide.RingActive) _chatSide.StartRing(GameRingSeconds);   // chat app (e.g. Discord) opened after arming
             _repRec = rec;
-            rec.OnRecordingComplete += (s, e) => tcs.TrySetResult(e.FilePath);
+            rec.OnRecordingComplete += (s, e) => { ReplayFailingSince = null; tcs.TrySetResult(e.FilePath); };
             // A segment dying mid-buffer (e.g. the pinned source window was closed) used to go completely unobserved —
             // the "armed" replay was silently dead until the next rotation (≥120 s). Log it and roll a fresh segment
             // (BuildOptions re-resolves the source, falling back to auto if the pinned window is gone).
             rec.OnRecordingFailed += (s, e) =>
             {
                 tcs.TrySetResult(p);
+                ReplayFailingSince ??= DateTime.UtcNow;
                 DiagLog.Line("CLIP", "replay segment failed: " + (e.Error ?? "?") + " — restarting buffer");
                 _ = Task.Run(() => RestartFailedSegmentAsync(rec));
             };
+            // A segment still running 15 s in means the buffer is healthy again — clear the dead flag then, not only when a
+            // segment finishes (a rotation is 2 min away; one transient failure must not look like a dead buffer).
+            if (ReplayFailingSince != null)
+                _ = Task.Delay(15_000).ContinueWith(_ => { if (ReferenceEquals(_repRec, rec) && !tcs.Task.IsCompleted) ReplayFailingSince = null; }, TaskScheduler.Default);
             _segStart[p] = DateTime.UtcNow;   // real start time → the replay join keeps the gap between segments
             foreach (var k in _segStart.Keys) if (k != p && !File.Exists(k)) _segStart.TryRemove(k, out _);
             rec.Record(p);
@@ -1327,6 +1341,12 @@ namespace SpartaClips
 
         /// <summary>Set once a recorder had to be abandoned stuck (its native memory is lost until the process exits).</summary>
         public static DateTime? NativeStuckSince { get; internal set; }
+        /// <summary>Set by the first failed buffer segment, cleared by the next one that finishes. 2026-11-15: after the
+        /// pinned game closed, every new recorder in this process failed ("Failed to initialize DirectX") for 14 hours —
+        /// a fresh process recorded at once — so a buffer that stays dead is TrayCore's cue to recycle the app.</summary>
+        public static DateTime? ReplayFailingSince { get; internal set; }
+        /// <summary>A replay save found the buffer dead (TrayCore recycles right away).</summary>
+        public static event Action? ReplayBroken;
         /// <summary>True while a replay save / rotation / restart holds the buffer.</summary>
         public static bool ReplayBusy => _repGate.CurrentCount == 0;
         /// <summary>True while the replay buffer is capturing a window (a game) rather than the desktop.</summary>
