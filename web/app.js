@@ -1918,6 +1918,12 @@
     if (!_videoWired) {
       _videoWired = true;
       _video.addEventListener("loadedmetadata", () => {
+        // An undecodable VIDEO track with a playable audio track raises no error — the player just plays the sound over
+        // black (videoWidth 0). Treat that like a decode failure and switch to the H.264 preview.
+        if (_video.videoWidth === 0 && _clipSrcMode === "direct" && !$("#clipPage")?.hidden && _clipName) {
+          const info = infoMem[_clipName];
+          if (!info || !(info.height === 0)) { if (info && info.codec === "hevc") _hevcNative = false; setClipSource(_clipName, true); return; }
+        }
         if (_video.videoWidth > 0) _clipAR = _video.videoWidth / _video.videoHeight;
         const d = _video.duration;
         if (isFinite(d) && d > 0 && Math.abs((_clipDur || 0) - d) > 0.5) {
@@ -1941,7 +1947,13 @@
         const pg = $("#clipPage"); if (!pg || pg.hidden || !_video.currentSrc) return;   // ignore teardown / no-src errors
         showClipPreparing(false);
         const info = infoMem[_clipName];
-        if (info && info.codec === "hevc" && _hevcNative === false && _clipSrcMode !== "proxy") { setClipSource(_clipName); return; }   // HEVC direct failed → convert
+        // ANY direct-play failure → build the H.264 preview with the bundled ffmpeg (it decodes everything) before giving
+        // up. before: only HEVC on a PC already known to lack HEVC got this; a friend's PC that couldn't decode a clip
+        // (HEVC misdetected as supported, a missing/broken AV1 or HEVC extension, odd GPU driver) just got this toast.
+        if (_clipSrcMode !== "proxy") {
+          if (info && info.codec === "hevc") _hevcNative = false;   // the system claimed HEVC but couldn't play it
+          setClipSource(_clipName, true); return;
+        }
         showToast("Couldn't play this clip", "The file may be corrupt or use a codec your system can't decode.");
       });
     }
@@ -1986,10 +1998,10 @@
   function showClipPreparing(on) { const el = $("#clipPrep"); if (el) el.hidden = !on; }
   // Pick the <video> source: HEVC with NO native OS codec → an ffmpeg H.264 proxy (set on window.onClipProxy); everything
   // else (H.264, AV1, or HEVC when the OS codec is installed) plays directly from clips.local in-page.
-  function setClipSource(name) {
+  function setClipSource(name, forceProxy) {
     const v = ensureVideo(); if (!v) return;
     const info = infoMem[name];
-    if (info && info.codec === "hevc" && _hevcNative === false) {
+    if (forceProxy || (info && info.codec === "hevc" && _hevcNative === false)) {
       _clipSrcMode = "proxy"; showClipPreparing(true);
       // Stop the PREVIOUS clip immediately — before: only the direct branch replaced v.src, so the prior clip kept
       // playing (audibly) under the "Preparing preview…" overlay until the proxy landed — or forever if it failed.
@@ -2009,7 +2021,7 @@
     const v = ensureVideo(); if (!v) return;
     showClipPreparing(false);
     if (url) { try { v.src = url; v.load(); } catch {} try { v.currentTime = 0; } catch {} v.volume = Math.max(0, Math.min(1, _vidVol / 100)); v.play().catch(() => {}); }
-    else showToast("HEVC preview", "Couldn't prepare an H.264 preview for this clip.");
+    else showToast("Couldn't play this clip", "Your PC can't play it directly and the preview conversion failed too. The file may be damaged.");
   };
   function snapKf(t) {
     const a = _clipKfs; if (!a || a.length === 0) return t;
